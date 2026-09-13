@@ -38,10 +38,16 @@ driver_claude_run_agent() {
       ;;
     readonly)
       RUN_AGENT_OUTPUT="$(mktemp)"
+      # Deliberately no `|| true` here (unlike edit/full): cmd_verify (D5) needs
+      # to tell an infrastructure failure (CLI died before producing output)
+      # apart from a completed run with an unparseable verdict, so this branch's
+      # return value must be the real exit status of the `claude` invocation.
+      # `set -o pipefail` (scripts/sdd, sourced into) makes the pipeline's status
+      # the `claude` process's status even though `tee` runs after it.
       ( cd "$ROOT" && claude -p "$prompt" \
         --model "$model" \
         --permission-mode dontAsk \
-        --allowedTools "Task,Read,Grep,Glob" ) 2>&1 | tee "$RUN_AGENT_OUTPUT" || true
+        --allowedTools "Task,Read,Grep,Glob" ) 2>&1 | tee "$RUN_AGENT_OUTPUT"
       ;;
     *)
       echo "driver-claude: unknown mode '$mode'" >&2

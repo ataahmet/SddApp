@@ -511,11 +511,24 @@ cmd_verify() {
   # the WRAPPER session's reply, not the subagent's raw output, and the wrapper tends to
   # summarise — dropping the verdict line and leaving us "inconclusive" on a genuine PASS.
   # So the prompt explicitly requires the verdict to be relayed verbatim as the first line.
-  run_agent "sdd-verify" "readonly" "$SDD_MODEL_VERIFY" \
+  # Guarded explicitly (not a bare statement): a non-zero return here means the
+  # CLI itself failed before producing usable output (rejected flag, crashed,
+  # etc.) — an infrastructure failure, distinct from a completed run with no
+  # parseable verdict (D5). That case must leave the front matter untouched and
+  # exit non-zero, so it must not fall through to the fm_upsert below, and it
+  # must not trip `set -e`'s uncontrolled exit before we can report/clean up.
+  if ! run_agent "sdd-verify" "readonly" "$SDD_MODEL_VERIFY" \
     "Use the sdd-verify subagent for spec: $spec
 Then relay the subagent's verdict line verbatim as YOUR first line of output: either
 'VERIFY: PASS' or 'VERIFY: FAIL', with nothing before it — not a preamble, not a heading.
-Put your summary after that line. This line is parsed by a script; omitting it fails the run."
+Put your summary after that line. This line is parsed by a script; omitting it fails the run."; then
+    rm -f "${RUN_AGENT_OUTPUT:-}"
+    echo
+    echo "✗ Verify could not run — the agent CLI failed before producing any output" \
+      "(rejected flag, crashed, missing auth, etc.). Front matter left untouched;" \
+      "fix the CLI/flags and re-run 'sdd verify'." >&2
+    exit 1
+  fi
   local tmp="$RUN_AGENT_OUTPUT"
 
   local verdict=""
