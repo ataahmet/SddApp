@@ -376,6 +376,115 @@ run_task() { # <spec> <task>
 }
 
 ###############################################################################
+# Agent sync: .claude/agents/*.md → .github/agents/*.agent.md (T7, spec 002)
+###############################################################################
+# `.claude/agents/*.md` stays the single source (P3); `sdd sync-agents` derives
+# the Copilot CLI counterparts from it. `model:` is dropped so the driver's
+# --model stays authoritative for both backends (D2); `color:` is dropped too —
+# Copilot's agent schema has no such field.
+
+AGENTS_SRC_DIR="$ROOT/.claude/agents"
+AGENTS_DST_DIR="$ROOT/.github/agents"
+
+# Reads a frontmatter field, scoped to the first '---'...'---' block only
+# (unlike fm_get, which is not frontmatter-scoped and could match a body line).
+agent_fm_get() { # <file> <key>
+  awk -v k="$2" '
+    NR==1 && /^---[[:space:]]*$/ { infm=1; next }
+    infm && /^---[[:space:]]*$/ { exit }
+    infm && $0 ~ "^" k ":" {
+      sub("^" k ":[[:space:]]*", "")
+      print
+      exit
+    }
+  ' "$1"
+}
+
+# Everything after the closing '---' of the frontmatter block, verbatim.
+agent_body() { # <file>
+  awk '
+    NR==1 && /^---[[:space:]]*$/ { infm=1; next }
+    infm && /^---[[:space:]]*$/ { infm=0; started=1; next }
+    started { print }
+  ' "$1"
+}
+
+# Translates a comma-separated Claude `tools:` list into Copilot's tool names
+# (§3 mapping table), de-duplicating (Grep and Glob both map to "search").
+translate_tools() { # <claude-tools-csv>
+  local input="$1" tool trimmed mapped out="" seen=","
+  IFS=',' read -ra _tools_arr <<< "$input"
+  for tool in "${_tools_arr[@]}"; do
+    trimmed="$(echo "$tool" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
+    [ -n "$trimmed" ] || continue
+    case "$trimmed" in
+      Read)  mapped="read" ;;
+      Grep)  mapped="search" ;;
+      Glob)  mapped="search" ;;
+      Edit)  mapped="edit" ;;
+      Write) mapped="write" ;;
+      Bash)  mapped="shell" ;;
+      *)
+        echo "sdd sync-agents: unknown Claude tool '$trimmed' — no Copilot mapping known" >&2
+        return 1
+        ;;
+    esac
+    case "$seen" in
+      *",$mapped,"*) ;;  # already present, skip
+      *) seen="${seen}${mapped}," ; out="${out:+$out, }$mapped" ;;
+    esac
+  done
+  echo "$out"
+}
+
+# Generates one .github/agents/<name>.agent.md from one .claude/agents/*.md.
+sync_one_agent() { # <src-file> <dst-dir>
+  local src="$1" dst_dir="$2" name description tools_raw tools dst
+
+  name="$(agent_fm_get "$src" name)"
+  description="$(agent_fm_get "$src" description)"
+  tools_raw="$(agent_fm_get "$src" tools)"
+
+  [ -n "$name" ] || { echo "sdd sync-agents: $src has no 'name:' in frontmatter" >&2; return 1; }
+  # Copilot's schema requires 'description' (§3).
+  [ -n "$description" ] || { echo "sdd sync-agents: $src has no 'description:' in frontmatter" >&2; return 1; }
+
+  tools=""
+  if [ -n "$tools_raw" ]; then
+    tools="$(translate_tools "$tools_raw")" || return 1
+  fi
+
+  dst="$dst_dir/$name.agent.md"
+  {
+    echo "---"
+    echo "name: $name"
+    echo "description: $description"
+    [ -n "$tools" ] && echo "tools: $tools"
+    # model: intentionally omitted (D2) — the driver's --model stays
+    # authoritative; color: intentionally omitted — no such field in Copilot's
+    # agent schema.
+    echo "---"
+    echo "<!-- GENERATED — do not edit by hand. Source: .claude/agents/$(basename "$src"). Regenerate with: ./scripts/sdd sync-agents -->"
+    agent_body "$src"
+  } > "$dst"
+  echo "  · $(basename "$src") → ${dst#$ROOT/}"
+}
+
+cmd_sync_agents() {
+  [ -d "$AGENTS_SRC_DIR" ] || { echo "No $AGENTS_SRC_DIR directory found."; exit 1; }
+  mkdir -p "$AGENTS_DST_DIR"
+  local f had_files=0
+  echo "→ Syncing .claude/agents/ → .github/agents/ ..."
+  for f in "$AGENTS_SRC_DIR"/*.md; do
+    [ -f "$f" ] || continue
+    had_files=1
+    sync_one_agent "$f" "$AGENTS_DST_DIR" || exit 1
+  done
+  [ "$had_files" -eq 1 ] || { echo "No agent files found in $AGENTS_SRC_DIR"; exit 1; }
+  echo "✓ .github/agents/ regenerated."
+}
+
+###############################################################################
 # Commands
 ###############################################################################
 
@@ -718,6 +827,7 @@ Usage:
   sdd verify <spec.md>                               Mandatory gate: check spec vs CLAUDE.md → verify: passed/failed
   sdd implement <spec.md> [Task]                     Implement a task; omit Task to implement all in order (active+branch, alignment: resolved required)
   sdd fix-ktlint [gradle-task]                       Fix ktlint violations with agent (default: app:ktlint)
+  sdd sync-agents                                    Regenerate .github/agents/*.agent.md from .claude/agents/*.md
   sdd done   <spec.md>                               Quality gates + status: done
   sdd block  <spec.md> "<reason>"                    status: blocked
   sdd drop   <spec.md> "<reason>"                    status: dropped
@@ -739,6 +849,7 @@ main() {
     implement)      cmd_implement "$@" ;;
     verify)         cmd_verify "$@" ;;
     fix-ktlint)     cmd_fix_ktlint "$@" ;;
+    sync-agents)    cmd_sync_agents "$@" ;;
     done)           cmd_done "$@" ;;
     block)          cmd_block "$@" ;;
     drop)           cmd_drop "$@" ;;
