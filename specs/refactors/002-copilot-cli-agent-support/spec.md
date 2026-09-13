@@ -2,10 +2,10 @@
 task_id: 002
 task_name: copilot-cli-agent-support
 type: refactor
-status: ready
-branch: ~                # `scripts/sdd start` fills in: main/NNN-short-slug
+status: active
+branch: main/002-copilot-cli-agent-support
 alignment: resolved
-verify: failed
+verify: passed
 created: 2026-09-13
 updated: 2026-09-13
 target_version: 1.0.0
@@ -40,8 +40,8 @@ GitHub Copilot CLI as a second backend at low cost and leaves the workflow itsel
 |---|---|
 | `cmd_align` (L266–280) | `command -v claude`, `claude -p "Use the sdd-align subagent…" --model --permission-mode acceptEdits` |
 | `run_task` (L204–206) | `claude -p "Use the sdd-implement subagent…" --permission-mode bypassPermissions` |
-| `cmd_verify` (L403–414) | `claude -p "Use the sdd-verify subagent…" --permission-mode dontAsk --allowedTools` ; parses `VERIFY:` out of stdout |
-| `cmd_fix_ktlint` (L462, 484–492) | `claude -p "Use the kotlin-ktlint subagent…" --permission-mode acceptEdits` |
+| `cmd_verify` (L400–420) | `claude -p "Use the sdd-verify subagent…" --permission-mode dontAsk --allowedTools` ; parses `VERIFY:` out of stdout |
+| `cmd_fix_ktlint` (L466, 490–498) | `claude -p "Use the kotlin-ktlint subagent…" --permission-mode acceptEdits` |
 | `SDD_MODEL_*` (L14–17) | Claude aliases `opus` / `sonnet` / `haiku` |
 | error strings | "Claude Code CLI bulunamadı" in 3 places |
 
@@ -62,7 +62,17 @@ exist in the repo. Out of scope here; see §2 of the Excluded list.
 each driver translates it for its own CLI. `SDD_AGENT` selects the backend (`claude` | `copilot`
 | `auto`, default `auto` = prefer `claude`, fall back to `copilot`).
 
-Copilot CLI equivalents (verified against GitHub docs):
+Copilot CLI equivalents, taken from the GitHub documentation on 2026-09-13:
+
+- Agent file location, `.agent.md` extension and `--agent` invocation:
+  <https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/create-custom-agents-for-cli>
+- Agent frontmatter schema, `tools` aliases and model precedence:
+  <https://docs.github.com/en/copilot/reference/custom-agents-configuration>
+- `CLAUDE.md` discovery and `@`-reference expansion:
+  <https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-custom-instructions>
+- `-p`, `-s`, `--allow-tool`, `--deny-tool`, `--add-dir`, `--model` and their filter syntax:
+  <https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-programmatic-reference>
+
 
 | Concern | Claude Code | Copilot CLI |
 |---|---|---|
@@ -89,6 +99,14 @@ counterparts (frontmatter translated, body copied verbatim, `GENERATED — do no
 
 Model availability depends on the Copilot plan, so every value is env-overridable and `sdd doctor`
 reports what the installed CLI actually accepts.
+
+**Accepted risk.** The flags, schema and model names above are documented, not yet exercised —
+Copilot CLI is not installed on the development machine as of this spec. The mitigation is
+ordering, not faith: installing and authenticating the CLI is a precondition of T5 (D1), and
+T11's `sdd doctor` includes a flag-support pre-flight probe, so any divergence surfaces as a
+concrete failure before the dependent tasks are accepted. If a required flag turns out not to
+exist, T5/T7/T10/T11 and their criteria are re-opened rather than worked around (D5 forbids
+silent degradation).
 
 ### Scope
 
@@ -147,7 +165,7 @@ reports what the installed CLI actually accepts.
 - [ ] T2 – Move the Claude driver to `scripts/lib/driver-claude.sh`; add `SDD_AGENT` (`claude|copilot|auto`) resolution (binary presence only, no runtime fallback — D6) and neutral "CLI not found" messaging.
 - [ ] T3 – **Breaking change 1 of §5 (D6):** unify the missing-CLI exit path. `cmd_align`'s CLI-not-found branch currently prints the manual protocol and falls through to exit 0; move that text into the shared `run_agent` error path so all four agent-backed commands print it and exit 1.
 - [ ] T4 – **Breaking change 2 of §5 (D5):** split infrastructure failure from an inconclusive verdict in `cmd_verify`. Today the `verify: failed` write happens whenever no `VERIFY:` line is found, including when the CLI never ran. Have `run_agent` report *why* it failed; write `verify: failed` only for a completed run with unparseable output, and on infrastructure failure leave the front matter untouched and exit non-zero.
-- [ ] T5 – Add `scripts/lib/driver-copilot.sh`: `--agent`, `-p`, `-s`, `--allow-tool`/`--deny-tool` per mode, `--model` per role; `implement` mode uses the explicit allow list from D4, never `--allow-all-tools`.
+- [ ] T5 – Add `scripts/lib/driver-copilot.sh`: `--agent`, `-p`, `-s`, `--allow-tool`/`--deny-tool` per mode, `--model` per role; `implement` mode uses the explicit allow list from D4, never `--allow-all-tools`. Before dispatching, the driver compares `.claude/agents/*.md` against `.github/agents/*.agent.md` and prints a warning naming any stale file — it then runs anyway and never regenerates (D7).
 - [ ] T6 – Replace `SDD_MODEL_*` literals with per-driver role→model tables (§3), keeping the existing env-var names as overrides.
 - [ ] T7 – Add `sdd sync-agents`: translate `.claude/agents/*.md` frontmatter and emit `.github/agents/*.agent.md` with a generated-file banner. `model:` is dropped so the driver's `--model` stays authoritative (D2); `color:` is dropped too, simply because Copilot's agent schema has no such field.
 - [ ] T8 – Rewrite the "How you are launched" sections of the four agent bodies in tool-neutral wording, then re-run `sdd sync-agents`.
@@ -224,15 +242,15 @@ throwaway copy, so its front matter can be reset between runs).
      1. **Question:** <question>
         - **Answer:** <answer>
      LABELLING: where a task or criterion elsewhere in this spec cites a decision as D<n>, the
-     <n> is this list's numbering. Not every question is cited by label; D1 (Copilot access) and
-     D8 (string language) are preconditions rather than design constraints, so they are honoured
-     without a label. The three decisions settled with the user *before* align ran are labelled
+     <n> is this list's numbering. Not every question is cited by label: D8 (string language) is
+     a writing convention rather than a design constraint, so it is honoured throughout without
+     a citation. The three decisions settled with the user *before* align ran are labelled
      P1 (model mapping), P2 (CLI only) and P3 (`.claude/agents/` stays the source); they are
      recorded in §3 / Scope and are not repeated here. P-labels and D-labels are separate
      sequences — do not renumber one into the other. -->
 
 1. **Question:** Is the GitHub Copilot CLI actually installed and authenticated on the machine where this spec will be implemented? The §7 acceptance criteria and §8 test plan require live `SDD_AGENT=copilot` runs of `align`, `verify` and `implement`; if no Copilot access exists, do we (a) postpone to `blocked`, (b) ship the driver with only the Claude-regression criteria executed and mark the Copilot criteria as untested, or (c) something else?
-   - **Answer:** A Copilot subscription exists, so neither (a) nor (b) applies: the CLI is installed (`npm i -g @github/copilot`) as a prerequisite of T3 and every `SDD_AGENT=copilot` acceptance criterion in §7 and test in §8 is executed live. Installing and authenticating the CLI is a precondition of starting T3, not a task in its own right; if installation turns out to be impossible the spec goes to `blocked` rather than shipping untested criteria.
+   - **Answer:** A Copilot subscription exists, so neither (a) nor (b) applies: the CLI is installed (`npm i -g @github/copilot`) as a prerequisite of T5 and every `SDD_AGENT=copilot` acceptance criterion in §7 and test in §8 is executed live. Installing and authenticating the CLI is a precondition of starting T5 — the first task that needs a live Copilot install — not a task in its own right; if installation turns out to be impossible the spec goes to `blocked` rather than shipping untested criteria.
 2. **Question:** §3 states Copilot's precedence is "agent frontmatter > `--model` > `COPILOT_MODEL`", but the `.claude/agents/*.md` sources carry a `model:` alias (e.g. `model: sonnet` in `sdd-verify.md`) — if `sync-agents` translates it into the generated `.github/agents/*.agent.md`, the frontmatter will silently win over the `SDD_MODEL_*` env overrides promised in T4. Should the generator omit `model:` from the generated files so the driver's `--model` stays authoritative, keep it and treat the env vars as Claude-only, or translate it and drop `--model` for Copilot?
    - **Answer:** The generator omits `model:` from the generated `.github/agents/*.agent.md` files entirely, so the driver's `--model` stays authoritative and the `SDD_MODEL_*` overrides behave identically on both backends. The `model:` alias in `.claude/agents/*.md` is kept (Claude Code needs it) but is treated as source-only metadata that `sync-agents` deliberately drops. `sdd doctor` asserts that no generated agent file contains a `model:` key.
 3. **Question:** `.claude/settings.json` denies *paths* (`local.properties`, `secrets.properties`, `.env`, `*.jks`, `*.keystore`), while Copilot's `--deny-tool` is tool-granular, not path-granular. If the installed Copilot CLI cannot express a path-level deny, what is the required behaviour: a coarser policy (deny `write`/`shell`, read-only where possible) that accepts the residual read risk, refusal to run the Copilot backend at all, or a pre-flight guard in the driver? And which of `scripts/lib/deny-list.txt` vs `.claude/settings.json` is the generated artefact in T8?
@@ -273,3 +291,6 @@ throwaway copy, so its front matter can be reset between runs).
 | 2026-09-13 | ready | `sdd align` raised 8 decisions; all answered. §3/§5/§6/§7/§8 updated to match — two breaking changes now declared in §5 (D5, D6) |
 | 2026-09-13 | ready | verify FAIL: D2/D3 labels collided with the pre-align decisions. Pre-align set relabelled P1–P3; §10 extended with the flavour and Test-Plan-section justifications |
 | 2026-09-13 | ready | verify FAIL: §5 declared two breaking changes that no task implemented. §6 rewritten to 12 tasks — D6 and D5 are now T3 and T4 — plus acceptance criteria for T9/T12 and a corrected §9 labelling note |
+| 2026-09-13 | ready | verify FAIL: the driver-side drift warning (D7) was asserted in §7 but tasked nowhere — folded into T5. §3 now cites the Copilot docs it relies on and states the untested-flags risk explicitly |
+| 2026-09-13 | ready | Hotfix to `scripts/sdd`: `cmd_verify` now requires the wrapper session to relay the subagent's `VERIFY:` line verbatim — it was summarising the verdict away, so a genuine PASS was recorded as `verify: failed`. Permanently addressed by T4 |
+| 2026-09-13 | ready | verify FAIL: renumbering leftovers — D1's answer still named T3 as the Copilot-install precondition (now T5), and the §9 note wrongly claimed D1 is never cited by label |
