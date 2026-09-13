@@ -1,0 +1,578 @@
+#!/usr/bin/env bash
+# sdd — Specification-Driven Development CLI
+# Flow: new → ready → align → verify → start(branch) → implement → done
+# Lifecycle: draft → ready → active → done | blocked | dropped
+# Gate: verify must PASS (no open questions) before implement can run.
+# Details: CLAUDE.md §9 / §9.1, README.md
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SPECS="$ROOT/specs"
+TEMPLATES="$SPECS/templates"
+
+# Per-agent model selection (premium quota optimisation). Can be overridden via env vars.
+SDD_MODEL_ALIGN="${SDD_MODEL_ALIGN:-opus}"        # strongest — open decision generation
+SDD_MODEL_IMPLEMENT="${SDD_MODEL_IMPLEMENT:-sonnet}"  # medium — code writing
+SDD_MODEL_VERIFY="${SDD_MODEL_VERIFY:-sonnet}"    # medium — read-only inspection
+SDD_MODEL_KTLINT="${SDD_MODEL_KTLINT:-haiku}"     # cheapest — mechanical format fixing
+
+###############################################################################
+# Utility helpers
+###############################################################################
+
+# type (singular) → folder (plural)
+plural() {
+  case "$1" in
+    feature)  echo "features" ;;
+    bug)      echo "bugs" ;;
+    test)     echo "tests" ;;
+    refactor) echo "refactors" ;;
+    *)        echo "" ;;
+  esac
+}
+
+# type (singular) → commit/spec short code (same as template H1 headings)
+type_code() {
+  case "$1" in
+    feature)  echo "FEAT" ;;
+    bug)      echo "BUG" ;;
+    test)     echo "TEST" ;;
+    refactor) echo "REF" ;;
+    *)        echo "SPEC" ;;
+  esac
+}
+
+slugify() {
+  echo "$1" | tr '[:upper:]' '[:lower:]' | tr ' ' '-' | tr -cd 'a-z0-9-'
+}
+
+today() { date +%Y-%m-%d; }
+
+# Next 3-digit task_id (unique counter across all types)
+next_id() {
+  local max=0
+  for d in "$SPECS"/{features,bugs,tests,refactors}/*/; do
+    [ -d "$d" ] || continue
+    n="$(basename "$d" | grep -oE "^[0-9]+" || true)"
+    [ -n "$n" ] && (( 10#$n > max )) && max=$((10#$n))
+  done
+  printf "%03d" $((max + 1))
+}
+
+###############################################################################
+# Front-matter helpers
+###############################################################################
+
+# Read front matter field
+fm_get() {
+  grep -E "^$2:" "$1" | head -1 | sed -E "s/^$2:[[:space:]]*//; s/[[:space:]]+$//"
+}
+
+# Write front matter field (first matching line)
+fm_set() {
+  local file="$1" key="$2" val="$3"
+  # macOS/BSD sed compatible
+  sed -i '' -E "s|^(${key}:)[[:space:]]*.+$|\1 ${val}|" "$file"
+}
+
+# Add/update front matter field (inserts before closing --- if not found)
+fm_upsert() {
+  local file="$1" key="$2" val="$3"
+  if grep -qE "^$key:" "$file"; then
+    fm_set "$file" "$key" "$val"
+  else
+    awk -v k="$key" -v v="$val" '
+      BEGIN { c = 0 }
+      /^---[[:space:]]*$/ { c++; if (c == 2) print k ": " v }
+      { print }
+    ' "$file" > "$file.tmp" && mv "$file.tmp" "$file"
+  fi
+}
+
+spec_path() { # <type> <id-name>
+  echo "$SPECS/$(plural "$1")/$2/spec.md"
+}
+
+###############################################################################
+# Section / alignment inspection helpers
+###############################################################################
+
+# Does a section have real content? (comments / empty items / {placeholder} don't count)
+# Usage: section_filled <file> <heading-regex>  → returns 0 if filled
+section_filled() {
+  awk -v re="$2" '
+    function trim(s){ gsub(/^[[:space:]]+|[[:space:]]+$/,"",s); return s }
+    BEGIN{ insec=0; found=0; incmt=0 }
+    $0 ~ re { insec=1; next }
+    insec && /^#{1,6}[[:space:]]/ { insec=0 }
+    insec {
+      line=$0
+      if (incmt){ if(line ~ /-->/) incmt=0; next }
+      if (line ~ /<!--/ && line !~ /-->/){ incmt=1; next }
+      gsub(/<!--.*-->/,"",line)
+      t=trim(line)
+      if (t=="") next
+      if (t ~ /^[-*][[:space:]]*$/) next                        # empty item
+      if (t ~ /^[-*][[:space:]]*\[[ xX]?\][[:space:]]*$/) next  # empty checkbox
+      if (t ~ /^`?\{.*\}`?$/) next                              # {placeholder}
+      found=1
+    }
+    END{ exit(found?0:1) }
+  ' "$1"
+}
+
+# Scan the Alignment section: QUEST=.. ANSW=.. EMPTY=.. and optionally MISS=..
+check_alignment() {
+  awk '
+    function trim(s){ gsub(/^[[:space:]]+|[[:space:]]+$/,"",s); return s }
+    BEGIN { insec=0; quest=0; answ=0; empty=0; lastq=""; miss=""; incmt=0 }
+    /^#{1,6}[[:space:]].*Open Decisions \(Alignment\)/ { insec=1; next }
+    insec && /^#{1,6}[[:space:]]/ { insec=0 }
+    insec {
+      line=$0
+      if (incmt) { if (line ~ /-->/) incmt=0; next }
+      if (line ~ /<!--/ && line !~ /-->/) { incmt=1; next }
+      gsub(/<!--.*-->/, "", line)
+      if (line ~ /\*\*Question:\*\*/) { quest++; q=line; sub(/.*\*\*Question:\*\*/,"",q); lastq=trim(q) }
+      if (line ~ /\*\*Answer:\*\*/) {
+        answ++; a=line; sub(/.*\*\*Answer:\*\*/,"",a); a=trim(a)
+        if (a==""){ empty++; miss=miss (miss=="" ? ("# " answ) : lastq) }
+      }
+    }
+    END {
+      printf "QUEST=%d ANSW=%d EMPTY=%d\n", quest, answ, empty
+      if (empty>0) printf "MISS=%s\n", miss
+    }
+  ' "$1"
+}
+
+# Are the Open Decisions answered AND formally resolved via align-resolve?
+require_alignment_resolved() {
+  local spec="$1"
+  grep -qiE "^#{1,6}.*Open Decisions \(Alignment\)" "$spec" || return 0  # no section → gate not applied
+  local out quest answ empty miss
+  out="$(check_alignment "$spec")"
+  quest="$(printf '%s' "$out" | sed -n 's/.*QUEST=\([0-9]*\).*/\1/p')"
+  answ="$(printf '%s' "$out" | sed -n 's/.*ANSW=\([0-9]*\).*/\1/p')"
+  empty="$(printf '%s' "$out" | sed -n 's/.*EMPTY=\([0-9]*\).*/\1/p')"
+  miss="$(printf '%s\n' "$out" | sed -n 's/^MISS=//p')"
+  if [ "${quest:-0}" -eq 0 ]; then
+    echo "✗ No questions in the Alignment section. Run 'sdd align $spec' first."; return 1
+  fi
+  if [ "${empty:-0}" -gt 0 ] || [ "${answ:-0}" -lt "${quest:-0}" ]; then
+    echo "✗ Cannot proceed until Open Decisions are answered (answered $(( answ - empty ))/$quest)."
+    [ -n "$miss" ] && echo "  Missing answers: $miss"
+    echo "  Fill in the answers and try again."; return 1
+  fi
+  # Front matter flag: must be explicitly set to 'resolved' by align-resolve.
+  # Skip check if field is absent or '~' (backwards-compatible with specs that predate alignment).
+  local flag
+  flag="$(fm_get "$spec" alignment)"
+  if [ -n "$flag" ] && [ "$flag" != "~" ] && [ "$flag" != "resolved" ]; then
+    echo "✗ alignment is '$flag' — answers look filled but 'sdd align-resolve' was never run."
+    echo "  Run: ./scripts/sdd align-resolve $spec"
+    return 1
+  fi
+  return 0
+}
+
+# Mandatory gate: start/implement are blocked until the spec has passed verify (no open questions).
+require_verify_passed() {
+  local spec="$1" flag
+  flag="$(fm_get "$spec" verify)"
+  if [ "$flag" != "passed" ]; then
+    echo "✗ verify is '${flag:-none}' — the spec has not passed verification."
+    echo "  Run: ./scripts/sdd verify $spec  (must PASS before opening a branch / implementing)."
+    return 1
+  fi
+  return 0
+}
+
+# Lists task IDs (T1, T2, ...) from the spec's Task List section in order.
+list_tasks() { # <spec>
+  grep -oE '"[[:space:]]*-[[:space:]]*\[[ xX]\][[:space:]]*T[0-9]+' "$1" | grep -oE 'T[0-9]+'
+}
+
+# Implements a single task with the sdd-implement agent + prints a commit hint.
+run_task() { # <spec> <task>
+  local spec="$1" task="$2" code id
+  echo "→ Implementing $task (following CLAUDE.md rules) ..."
+  # CLAUDE.md is auto-loaded via CLAUDE.md → @CLAUDE.md; the subagent definition
+  # lives in .claude/agents/sdd-implement.md and is invoked by naming it in the
+  # prompt. Claude Code's Task tool dispatches to the subagent, which runs in its
+  # own context with its own tools (as declared in the agent's frontmatter).
+  # Headless (`-p`) + bypassPermissions keeps the run non-interactive; no TUI.
+  ( cd "$ROOT" && claude -p "Use the sdd-implement subagent to implement task $task from spec: $spec" \
+    --model "$SDD_MODEL_IMPLEMENT" \
+    --permission-mode bypassPermissions ) || true
+  code="$(type_code "$(fm_get "$spec" type)")"
+  id="$(fm_get "$spec" task_id)"
+  echo "Review changes → ./gradlew checkCodeQuality → commit:"
+  echo "  git commit -m '[${code}-${id}] ${task} – <short-description>' -m 'Spec: ${spec#$ROOT/}'"
+}
+
+###############################################################################
+# Commands
+###############################################################################
+
+cmd_new() {
+  local type="$1"; shift
+  local title="$*"
+  local folder; folder="$(plural "$type")"
+  [ -n "$folder" ] || { echo "Invalid type: $type (feature|bug|test|refactor)"; exit 1; }
+  local tpl="$TEMPLATES/$type.md"
+  [ -f "$tpl" ] || { echo "Template not found: $tpl"; exit 1; }
+
+  local id name dir spec default_id input_id
+  default_id="$(next_id)"
+  # Ask the user for the task_id (e.g. a Jira ID); Enter accepts the suggested default.
+  printf "task_id [%s]: " "$default_id" >&2
+  read -r input_id || true
+
+  input_id="$(echo "${input_id:-$default_id}" | sed -E 's/[[:space:]]+//g')"
+  id="$(slugify "$input_id")"
+  [ -n "$id" ] || id="$default_id"
+  name="$(slugify "$title")"
+  dir="$SPECS/$folder/$id-$name"
+  spec="$dir/spec.md"
+  mkdir -p "$dir"
+  cp "$tpl" "$spec"
+
+  fm_set "$spec" task_id "$id"
+  fm_set "$spec" task_name "$name"
+  fm_set "$spec" status "draft"
+  fm_set "$spec" created "$(today)"
+  fm_set "$spec" updated "$(today)"
+  # Also insert the title
+  sed -i '' -E "s|\{Title\}|$title|" "$spec"
+
+  echo "✓ Spec created: $spec  (status: draft)"
+  echo "  Next: fill it in → sdd ready → sdd align → sdd verify → sdd start"
+  echo "  ready:  ./scripts/sdd ready $spec"
+}
+
+cmd_align() {
+  local spec="$1"
+  [ -f "$spec" ] || { echo "Spec not found: $spec"; exit 1; }
+  # Add skeleton if Open Decisions (Alignment) section is missing
+  if ! grep -qiE "^#{1,6}.*Open Decisions \(Alignment\)" "$spec"; then
+    printf '\n## Open Decisions (Alignment)\n--- Agent fills this in; each item: bold Question line + bold Answer line below it ---\n' >> "$spec"
+  fi
+  # Alignment gate: 'start' is blocked until answered.
+  fm_upsert "$spec" alignment "pending"
+  # Re-aligning changes the spec → any prior verify pass is stale, force a re-verify.
+  fm_upsert "$spec" verify "pending"
+  fm_set "$spec" updated "$(today)"
+
+  if command -v claude >/dev/null; then
+    echo "→ Alignment (Claude Code): questions will be generated and written into the spec ..."
+    # Subagent definition is in .claude/agents/sdd-align.md; invoked by name in the
+    # prompt so Claude Code dispatches to it via its Task tool. Headless (`-p`)
+    # keeps the run non-interactive: the subagent writes questions into the spec
+    # and exits — no TUI, no chat.
+    ( cd "$ROOT" && claude -p "Use the sdd-align subagent for spec: $spec" \
+      --model "$SDD_MODEL_ALIGN" \
+      --permission-mode acceptEdits ) || true
+    echo
+    echo "✓ Alignment questions written. Status:"
+    grep -E '^alignment:' "$spec" || true
+    echo "  Next: open the spec, fill each '- **Answer:**' line, then:"
+    echo "    ./scripts/sdd align-resolve $spec"
+    echo "    ./scripts/sdd verify $spec"
+  else
+    cat <<EOF
+→ Alignment (agent-driven) — Claude Code CLI not found, manual protocol:
+  1. Read CLAUDE.md + spec: $spec
+  2. Write the questions into the '## Open Decisions (Alignment)' section:
+       N. **Question:** <question>
+       - **Answer:**
+  3. Fill each '- **Answer:**' line by asking the user (don't answer yourself).
+  4. Once answers are filled: ./scripts/sdd align-resolve \$spec  (sets alignment: resolved)
+  5. Then: ./scripts/sdd verify \$spec  →  ./scripts/sdd start \$spec
+  (Claude Code CLI kurulu değil. Kurulum için README.md'e bakın.)
+EOF
+  fi
+}
+
+cmd_align_resolve() {
+  local spec="$1"
+  [ -f "$spec" ] || { echo "Spec not found: $spec"; exit 1; }
+  grep -qiE "^#{1,6}.*Open Decisions \(Alignment\)" "$spec" || {
+    echo "✗ Spec has no '## Open Decisions (Alignment)' section. Run 'sdd align' first."; exit 1; }
+
+  local out quest answ empty miss
+  out="$(check_alignment "$spec")"
+  quest="$(printf '%s' "$out" | sed -n 's/.*QUEST=\([0-9]*\).*/\1/p')"
+  answ="$(printf '%s' "$out" | sed -n 's/.*ANSW=\([0-9]*\).*/\1/p')"
+  empty="$(printf '%s' "$out" | sed -n 's/.*EMPTY=\([0-9]*\).*/\1/p')"
+  miss="$(printf '%s\n' "$out" | sed -n 's/^MISS=//p')"
+
+  if [ "${quest:-0}" -eq 0 ]; then
+    echo "✗ No '**Question:**' entries in Alignment section. Run 'sdd align' to add them."; exit 1
+  fi
+  if [ "${answ:-0}" -lt "${quest:-0}" ] || [ "${empty:-0}" -gt 0 ]; then
+    echo "✗ Not all questions answered (quest=$quest, answered=$(( answ - empty ))/$quest)."
+    [ -n "$miss" ] && echo "  Missing answers: $miss"
+    echo "  Fill each '- **Answer:**' line under every '**Question:**', then try again."
+    exit 1
+  fi
+  fm_set "$spec" alignment "resolved"
+  fm_set "$spec" updated "$(today)"
+  echo "✓ All alignment questions answered → alignment: resolved ($quest/$quest)."
+  echo "  Next: sdd verify $spec"
+}
+
+# draft → ready gate: are the required sections from CLAUDE.md §9.1 filled?
+cmd_ready() {
+  local spec="$1"
+  [ -f "$spec" ] || { echo "Spec not found: $spec"; exit 1; }
+  local status
+  status="$(fm_get "$spec" status)"
+  case "$status" in
+    draft) ;;
+    ready|active) echo "Already $status."; exit 0 ;;
+    *) echo "ready only works from draft (current: $status)."; exit 1 ;;
+  esac
+
+  # TODO: add required-section checks here via section_filled() as per CLAUDE.md §9.1
+  fm_set "$spec" status "ready"
+  fm_set "$spec" updated "$(today)"
+  echo "✓ status: ready"
+  echo "  Next: sdd align $spec"
+}
+
+# ready → active: create feature branch
+cmd_start() {
+  local spec="$1"
+  [ -f "$spec" ] || { echo "Spec not found: $spec"; exit 1; }
+  local status
+  status="$(fm_get "$spec" status)"
+  [ "$status" = "ready" ] || { echo "start only works from ready (current: $status). Run 'sdd ready' first."; exit 1; }
+
+  require_alignment_resolved "$spec" || exit 1
+  require_verify_passed "$spec" || exit 1
+
+  local id name branch
+  id="$(fm_get "$spec" task_id)"
+  name="$(fm_get "$spec" task_name)"
+  branch="main/$id-$name"
+  echo "→ Creating branch: $branch"
+  git -C "$ROOT" checkout -b "$branch"
+
+  fm_set "$spec" status "active"
+  fm_set "$spec" branch "$branch"
+  fm_set "$spec" updated "$(today)"
+  echo "✓ status: active, branch: $branch written."
+}
+
+cmd_implement() {
+  local spec="$1" task="${2:-}"
+  [ -f "$spec" ] || { echo "Spec not found: $spec"; exit 1; }
+  local status branch cur
+  status="$(fm_get "$spec" status)"
+  branch="$(fm_get "$spec" branch)"
+  [ "$status" = "active" ] || { echo "Spec is not active ($status). Run 'sdd start' first."; exit 1; }
+  cur="$(git -C "$ROOT" rev-parse --abbrev-ref HEAD)"
+  [ "$cur" = "$branch" ] || { echo "Wrong branch ($cur). Expected: $branch"; exit 1; }
+
+  require_alignment_resolved "$spec" || exit 1
+  require_verify_passed "$spec" || exit 1
+  command -v claude >/dev/null || { echo "Claude Code CLI bulunamadı. Kurulum için README.md'e bakın."; exit 1; }
+
+  if [ -n "$task" ]; then
+    run_task "$spec" "$task"
+    return
+  fi
+
+  # No task given → implement all tasks from the Task List in order.
+  local tasks t
+  tasks="$(list_tasks "$spec")"
+  [ -n "$tasks" ] || { echo "No tasks found in spec (## Task List). Usage: sdd implement <spec.md> [Task]"; exit 1; }
+  echo "→ No task specified; all tasks will be implemented in order: $(echo "$tasks" | tr '\n' ' ')"
+  while IFS= read -r t; do
+    [ -n "$t" ] || continue
+    echo "════════════════════════════════════════"
+    run_task "$spec" "$t"
+  done <<< "$tasks"
+  echo "════════════════════════════════════════"
+  echo "✓ All tasks completed."
+}
+
+cmd_verify() {
+  local spec="$1"
+  [ -f "$spec" ] || { echo "Spec not found: $spec"; exit 1; }
+  command -v claude >/dev/null || { echo "Claude Code CLI bulunamadı. Kurulum için README.md'e bakın."; exit 1; }
+  echo "→ Checking spec for contradictions with CLAUDE.md ..."
+  # CLAUDE.md is auto-loaded via CLAUDE.md → @CLAUDE.md; the audit protocol lives
+  # in .claude/agents/sdd-verify.md and is invoked as a subagent (frontmatter
+  # tools: Read/Grep/Glob → truly read-only). --permission-mode dontAsk denies
+  # anything outside the whitelist without prompting, so the run stays headless.
+  # We parse the machine-readable verdict from the subagent's output.
+  local tmp; tmp="$(mktemp)"
+  ( cd "$ROOT" && claude -p "Use the sdd-verify subagent for spec: $spec" \
+    --model "$SDD_MODEL_VERIFY" \
+    --permission-mode dontAsk \
+    --allowedTools "Task,Read,Grep,Glob" ) 2>&1 | tee "$tmp" || true
+
+  local verdict=""
+  if grep -qE 'VERIFY:[[:space:]]*PASS' "$tmp"; then
+    verdict="passed"
+  elif grep -qE 'VERIFY:[[:space:]]*FAIL' "$tmp"; then
+    verdict="failed"
+  fi
+  rm -f "$tmp"
+
+  echo
+  if [ "$verdict" = "passed" ]; then
+    fm_upsert "$spec" verify "passed"
+    fm_set "$spec" updated "$(today)"
+    echo "✓ Verify PASSED — no open questions/contradictions (verify: passed)."
+    echo "  Next: sdd implement $spec"
+    return 0
+  fi
+
+  # FAIL or no verdict detected → both block implement.
+  fm_upsert "$spec" verify "failed"
+  fm_set "$spec" updated "$(today)"
+  if [ "$verdict" = "failed" ]; then
+    echo "✗ Verify FAILED — resolve the items above in the spec, then run 'sdd verify' again."
+  else
+    echo "✗ Verify inconclusive (no VERIFY verdict detected) — treated as FAIL. Re-run 'sdd verify'."
+  fi
+  echo "  'sdd implement' is blocked until verify passes."
+  exit 1
+}
+
+cmd_done() {
+  local spec="$1"
+  [ -f "$spec" ] || { echo "Spec not found: $spec"; exit 1; }
+  local status
+  status="$(fm_get "$spec" status)"
+  [ "$status" = "active" ] || { echo "done only works after active (current: $status). Run 'sdd start' first."; exit 1; }
+  echo "→ Running quality gates ..."
+  ( cd "$ROOT" && ./gradlew checkCodeQuality assembleDevDebug )
+  fm_set "$spec" status "done"
+  fm_set "$spec" updated "$(today)"
+  echo "✓ status: done. Don't forget to merge the branch."
+}
+
+# Delegates ktlint violations that ktlintFormat cannot fix to the kotlin-ktlint agent.
+# Usage: sdd fix-ktlint [gradle-task]   (default task: app:ktlint)
+cmd_fix_ktlint() {
+  local gradle_task="${1:-app:ktlint}"
+  command -v claude >/dev/null || { echo "Claude Code CLI bulunamadı. Kurulum için README.md'e bakın."; exit 1; }
+
+  local tmp; tmp="$(mktemp)"
+  echo "→ Running ktlint (./gradlew $gradle_task) ..."
+  # Gradle returns non-zero if there are violations; collect output anyway.
+  ( cd "$ROOT" && ./gradlew "$gradle_task" ) >"$tmp" 2>&1 || true
+
+  # Extract .kt files with violations: 'path.kt:line:col' → path (relative to ROOT, deduplicated).
+  local files
+  files="$( { grep -oE '[^[:space:]]+\.kt:[0-9]+:[0-9]+' "$tmp" || true; } \
+    | sed -E 's/:[0-9]+:[0-9]+$//' \
+    | sed "s|^$ROOT/||" \
+    | sort -u | paste -sd, - )"
+
+  if [ -z "$files" ]; then
+    echo "✓ No ktlint violations found, nothing to fix."
+    rm -f "$tmp"; return 0
+  fi
+
+  echo "→ Sending files with violations to the kotlin-ktlint agent:"
+  echo "$files" | tr ',' '\n' | sed 's/^/  · /'
+
+  ( cd "$ROOT" && claude -p "Use the kotlin-ktlint subagent to fix the following violations.
+
+## Files to modify
+$files
+
+## Current ktlint violations
+$(cat "$tmp")" \
+    --model "$SDD_MODEL_KTLINT" \
+    --permission-mode acceptEdits ) || true
+
+  rm -f "$tmp"
+  echo "→ Verify again: ./gradlew $gradle_task"
+}
+
+cmd_block() {
+  local spec="$1"; shift; local reason="$*"
+  fm_set "$spec" status "blocked"
+  fm_set "$spec" blocked_reason "$reason"
+  fm_set "$spec" updated "$(today)"
+  echo "✓ status: blocked — $reason"
+}
+
+cmd_drop() {
+  local spec="$1"; shift; local reason="$*"
+  fm_set "$spec" status "dropped"
+  fm_set "$spec" dropped_reason "$reason"
+  fm_set "$spec" updated "$(today)"
+  echo "✓ status: dropped — $reason"
+}
+
+cmd_list() {
+  local filter="${1:-}"
+  printf "%-12s %-10s %-26s %s\n" "TYPE" "STATUS" "ID-NAME" "BRANCH"
+  for d in "$SPECS"/{features,bugs,tests,refactors}/*/; do
+    [ -d "$d" ] || continue
+    local spec="$d/spec.md"; [ -f "$spec" ] || continue
+    local type status branch base
+    type="$(fm_get "$spec" type)"
+    [ -n "$filter" ] && [ "$type" != "$filter" ] && continue
+    status="$(fm_get "$spec" status)"
+    branch="$(fm_get "$spec" branch)"
+    base="$(basename "$d")"
+    printf "%-12s %-10s %-26s %s\n" "$type" "$status" "$base" "$branch"
+  done
+}
+
+###############################################################################
+# Usage / entry point
+###############################################################################
+
+usage() {
+  cat <<'EOF'
+sdd — Specification-Driven Development CLI
+
+Usage:
+  sdd new <feature|bug|test|refactor> "title"       Create a spec (status: draft)
+  sdd align  <spec.md>                               Generate alignment questions (agent writes them into the spec)
+  sdd align-resolve <spec.md>                        Check all '**Answer:**' lines are filled → alignment: resolved
+  sdd ready  <spec.md>                               Required-sections gate → status: ready
+  sdd start  <spec.md>                               Open branch (agent) → status: active (alignment: resolved required)
+  sdd verify <spec.md>                               Mandatory gate: check spec vs CLAUDE.md → verify: passed/failed
+  sdd implement <spec.md> [Task]                     Implement a task; omit Task to implement all in order (active+branch, alignment: resolved required)
+  sdd fix-ktlint [gradle-task]                       Fix ktlint violations with agent (default: app:ktlint)
+  sdd done   <spec.md>                               Quality gates + status: done
+  sdd block  <spec.md> "<reason>"                    status: blocked
+  sdd drop   <spec.md> "<reason>"                    status: dropped
+  sdd list   [feature|bug|test|refactor]             List specs
+
+Lifecycle: draft → ready → active → done | blocked | dropped (CLAUDE.md §9.1)
+Branch:    main/{task_id}-{task_name} (e.g. main/001-biometric-login)
+EOF
+}
+
+main() {
+  local cmd="${1:-}"; shift || true
+  case "$cmd" in
+    new)            cmd_new "$@" ;;
+    align)          cmd_align "$@" ;;
+    align-resolve)  cmd_align_resolve "$@" ;;
+    ready)          cmd_ready "$@" ;;
+    start)          cmd_start "$@" ;;
+    implement)      cmd_implement "$@" ;;
+    verify)         cmd_verify "$@" ;;
+    fix-ktlint)     cmd_fix_ktlint "$@" ;;
+    done)           cmd_done "$@" ;;
+    block)          cmd_block "$@" ;;
+    drop)           cmd_drop "$@" ;;
+    list)           cmd_list "$@" ;;
+    ""|"-h"|"--help"|help) usage ;;
+    *) echo "Unknown command: $cmd"; usage; exit 1 ;;
+  esac
+}
+
+main "$@"

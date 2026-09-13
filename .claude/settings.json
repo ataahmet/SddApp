@@ -1,0 +1,30 @@
+{
+  "permissions": {
+    "defaultMode": "acceptEdits",
+    "allow": [
+      "Read",
+      "Grep",
+      "Glob",
+      "Bash(./gradlew *)",
+      "Bash(./scripts/sdd *)",
+      "Bash(git status *)",
+      "Bash(git diff *)",
+      "Bash(git log *)",
+      "Bash(git branch *)"
+    ],
+    "ask": [
+      "Bash(git push *)",
+      "Bash(git commit *)",
+      "Bash(git checkout *)",
+      "Bash(git reset *)"
+    ],
+    "deny": [
+      "Read(./secrets.properties)",
+      "Read(./local.properties)",
+      "Read(./.env)",
+      "Read(**/*.jks)",
+      "Read(**/*.keystore)",
+      "Bash(git push --force *)"
+    ]
+  }
+}
