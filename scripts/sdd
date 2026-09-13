@@ -10,6 +10,14 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SPECS="$ROOT/specs"
 TEMPLATES="$SPECS/templates"
 
+# shellcheck source=lib/driver-claude.sh
+source "$ROOT/scripts/lib/driver-claude.sh"
+
+# Agent backend selection: claude | copilot | auto (default). `auto` resolves by
+# binary presence only, claude first — no runtime fallback on auth/quota failure
+# (D6). See specs/refactors/002-copilot-cli-agent-support/spec.md.
+SDD_AGENT="${SDD_AGENT:-auto}"
+
 # Per-agent model selection (premium quota optimisation). Can be overridden via env vars.
 SDD_MODEL_ALIGN="${SDD_MODEL_ALIGN:-opus}"        # strongest — open decision generation
 SDD_MODEL_IMPLEMENT="${SDD_MODEL_IMPLEMENT:-sonnet}"  # medium — code writing
@@ -193,14 +201,61 @@ list_tasks() { # <spec>
 }
 
 ###############################################################################
-# Agent driver (Claude Code, inline for now — see specs/refactors/002-*/spec.md)
+# Agent driver dispatch (backends live in scripts/lib/driver-*.sh)
 ###############################################################################
 
-# Single seam every agent-backed command dispatches through. Today this only
-# knows the Claude Code CLI; the <agent> name is unused by this driver (Claude
-# dispatch happens by naming the subagent inside <prompt>) but is threaded
-# through so a future driver (e.g. Copilot CLI's `--agent`) can use it without
-# changing call sites.
+# Resolves SDD_AGENT (claude|copilot|auto) to a concrete backend by binary
+# presence only — no runtime fallback on auth/quota failure (D6). On success,
+# prints the backend name ("claude") on stdout. On failure, prints a neutral
+# English "CLI not found" message on stderr and returns 1.
+#
+# The copilot driver does not exist yet (scripts/lib/driver-copilot.sh, T5),
+# so a resolution to "copilot" — explicit or via auto — currently fails with
+# a clear "not implemented yet" message rather than a fake success.
+resolve_agent_backend() {
+  case "$SDD_AGENT" in
+    claude)
+      driver_claude_available || { agent_not_found_message "claude"; return 1; }
+      echo "claude"
+      ;;
+    copilot)
+      command -v copilot >/dev/null 2>&1 || { agent_not_found_message "copilot"; return 1; }
+      copilot_not_implemented_message
+      return 1
+      ;;
+    auto)
+      if driver_claude_available; then
+        echo "claude"
+      elif command -v copilot >/dev/null 2>&1; then
+        copilot_not_implemented_message
+        return 1
+      else
+        agent_not_found_message "auto"
+        return 1
+      fi
+      ;;
+    *)
+      echo "Unknown SDD_AGENT '$SDD_AGENT' (expected: claude|copilot|auto)." >&2
+      return 1
+      ;;
+  esac
+}
+
+agent_not_found_message() {
+  local requested="$1"
+  case "$requested" in
+    claude)  echo "No agent CLI found: 'claude' is not on PATH (SDD_AGENT=claude). See README.md for setup." >&2 ;;
+    copilot) echo "No agent CLI found: 'copilot' is not on PATH (SDD_AGENT=copilot). See README.md for setup." >&2 ;;
+    *)       echo "No agent CLI found: neither 'claude' nor 'copilot' is on PATH (SDD_AGENT=auto). See README.md for setup." >&2 ;;
+  esac
+}
+
+copilot_not_implemented_message() {
+  echo "SDD_AGENT resolved to 'copilot', but the Copilot CLI driver is not implemented yet (scripts/lib/driver-copilot.sh, spec 002 T5). Install 'claude', or set SDD_AGENT=claude." >&2
+}
+
+# Single seam every agent-backed command dispatches through. Resolves the
+# backend (see resolve_agent_backend) and routes to its driver.
 #
 # Usage: run_agent <agent> <mode> <model> <prompt>
 #   <mode>: edit      → --permission-mode acceptEdits
@@ -210,26 +265,14 @@ list_tasks() { # <spec>
 #              verdict parsing by the caller, e.g. cmd_verify)
 run_agent() {
   local agent="$1" mode="$2" model="$3" prompt="$4"
-  case "$mode" in
-    edit)
-      ( cd "$ROOT" && claude -p "$prompt" \
-        --model "$model" \
-        --permission-mode acceptEdits ) || true
-      ;;
-    full)
-      ( cd "$ROOT" && claude -p "$prompt" \
-        --model "$model" \
-        --permission-mode bypassPermissions ) || true
-      ;;
-    readonly)
-      RUN_AGENT_OUTPUT="$(mktemp)"
-      ( cd "$ROOT" && claude -p "$prompt" \
-        --model "$model" \
-        --permission-mode dontAsk \
-        --allowedTools "Task,Read,Grep,Glob" ) 2>&1 | tee "$RUN_AGENT_OUTPUT" || true
+  local backend
+  backend="$(resolve_agent_backend)" || return 1
+  case "$backend" in
+    claude)
+      driver_claude_run_agent "$agent" "$mode" "$model" "$prompt"
       ;;
     *)
-      echo "run_agent: unknown mode '$mode'" >&2
+      echo "run_agent: unsupported backend '$backend'" >&2
       return 1
       ;;
   esac
@@ -305,8 +348,9 @@ cmd_align() {
   fm_upsert "$spec" verify "pending"
   fm_set "$spec" updated "$(today)"
 
-  if command -v claude >/dev/null; then
-    echo "→ Alignment (Claude Code): questions will be generated and written into the spec ..."
+  local backend
+  if backend="$(resolve_agent_backend 2>/dev/null)"; then
+    echo "→ Alignment ($backend): questions will be generated and written into the spec ..."
     # Subagent definition is in .claude/agents/sdd-align.md; invoked by name in the
     # prompt so Claude Code dispatches to it via its Task tool. Headless (`-p`)
     # keeps the run non-interactive: the subagent writes questions into the spec
@@ -321,7 +365,7 @@ cmd_align() {
     echo "    ./scripts/sdd verify $spec"
   else
     cat <<EOF
-→ Alignment (agent-driven) — Claude Code CLI not found, manual protocol:
+→ Alignment (agent-driven) — no agent CLI found, manual protocol:
   1. Read CLAUDE.md + spec: $spec
   2. Write the questions into the '## Open Decisions (Alignment)' section:
        N. **Question:** <question>
@@ -329,7 +373,7 @@ cmd_align() {
   3. Fill each '- **Answer:**' line by asking the user (don't answer yourself).
   4. Once answers are filled: ./scripts/sdd align-resolve \$spec  (sets alignment: resolved)
   5. Then: ./scripts/sdd verify \$spec  →  ./scripts/sdd start \$spec
-  (Claude Code CLI kurulu değil. Kurulum için README.md'e bakın.)
+  (No agent CLI found on PATH — SDD_AGENT=$SDD_AGENT. See README.md for setup.)
 EOF
   fi
 }
@@ -417,7 +461,7 @@ cmd_implement() {
 
   require_alignment_resolved "$spec" || exit 1
   require_verify_passed "$spec" || exit 1
-  command -v claude >/dev/null || { echo "Claude Code CLI bulunamadı. Kurulum için README.md'e bakın."; exit 1; }
+  resolve_agent_backend >/dev/null || exit 1
 
   if [ -n "$task" ]; then
     run_task "$spec" "$task"
@@ -441,7 +485,7 @@ cmd_implement() {
 cmd_verify() {
   local spec="$1"
   [ -f "$spec" ] || { echo "Spec not found: $spec"; exit 1; }
-  command -v claude >/dev/null || { echo "Claude Code CLI bulunamadı. Kurulum için README.md'e bakın."; exit 1; }
+  resolve_agent_backend >/dev/null || exit 1
   echo "→ Checking spec for contradictions with CLAUDE.md ..."
   # CLAUDE.md is auto-loaded via CLAUDE.md → @CLAUDE.md; the audit protocol lives
   # in .claude/agents/sdd-verify.md and is invoked as a subagent (frontmatter
@@ -504,7 +548,7 @@ cmd_done() {
 # Usage: sdd fix-ktlint [gradle-task]   (default task: app:ktlint)
 cmd_fix_ktlint() {
   local gradle_task="${1:-app:ktlint}"
-  command -v claude >/dev/null || { echo "Claude Code CLI bulunamadı. Kurulum için README.md'e bakın."; exit 1; }
+  resolve_agent_backend >/dev/null || exit 1
 
   local tmp; tmp="$(mktemp)"
   echo "→ Running ktlint (./gradlew $gradle_task) ..."

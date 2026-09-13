@@ -162,8 +162,8 @@ silent degradation).
 ## 6. Task List
 
 - [x] T1 – Extract a `run_agent <agent> <mode> <model-role> <prompt>` seam in `scripts/sdd` and route `cmd_align`, `run_task`, `cmd_verify`, `cmd_fix_ktlint` through it, with the Claude driver inline. Pure extraction: today's prompts, exit codes and front-matter writes are all preserved verbatim — the two §5 changes are deliberately deferred to T3 and T4, so this task alone changes no behaviour.
-- [ ] T2 – Move the Claude driver to `scripts/lib/driver-claude.sh`; add `SDD_AGENT` (`claude|copilot|auto`) resolution (binary presence only, no runtime fallback — D6) and neutral "CLI not found" messaging.
-- [ ] T3 – **Breaking change 1 of §5 (D6):** unify the missing-CLI exit path. `cmd_align`'s CLI-not-found branch currently prints the manual protocol and falls through to exit 0; move that text into the shared `run_agent` error path so all four agent-backed commands print it and exit 1.
+- [x] T2 – Move the Claude driver to `scripts/lib/driver-claude.sh`; add `SDD_AGENT` (`claude|copilot|auto`) resolution (binary presence only, no runtime fallback — D6) and neutral "CLI not found" messaging.
+- [ ] T3 – **Breaking change 1 of §5 (D6):** unify the missing-CLI exit path. `cmd_align`'s CLI-not-found branch currently prints the manual protocol and falls through to exit 0; move that text into the shared `run_agent` error path so all four agent-backed commands print it and exit 1. Same task, same root cause: `cmd_align` writes `alignment: pending` and `verify: pending` *before* it checks that a backend exists, so a no-op run silently invalidates a passing verify — resolve the backend first and write nothing if it fails.
 - [ ] T4 – **Breaking change 2 of §5 (D5):** split infrastructure failure from an inconclusive verdict in `cmd_verify`. Today the `verify: failed` write happens whenever no `VERIFY:` line is found, including when the CLI never ran. Have `run_agent` report *why* it failed; write `verify: failed` only for a completed run with unparseable output, and on infrastructure failure leave the front matter untouched and exit non-zero.
 - [ ] T5 – Add `scripts/lib/driver-copilot.sh`: `--agent`, `-p`, `-s`, `--allow-tool`/`--deny-tool` per mode, `--model` per role; `implement` mode uses the explicit allow list from D4, never `--allow-all-tools`. Before dispatching, the driver compares `.claude/agents/*.md` against `.github/agents/*.agent.md` and prints a warning naming any stale file — it then runs anyway and never regenerates (D7).
 - [ ] T6 – Replace `SDD_MODEL_*` literals with per-driver role→model tables (§3), keeping the existing env-var names as overrides.
@@ -189,6 +189,8 @@ silent degradation).
       `VERIFY:` line writes `verify: failed` (D5).
 - [ ] `SDD_AGENT=auto` resolves by binary presence only and never switches backend at runtime;
       a missing CLI exits 1 from all four agent-backed commands, `align` included (D6).
+- [ ] `sdd align` with no backend available leaves the spec file byte-identical — in particular
+      it does not reset `alignment` or `verify` (D6).
 - [ ] `sdd sync-agents` is idempotent: running it twice leaves `git status` clean.
 - [ ] No generated `.github/agents/*.agent.md` contains a `model:` key, and `sdd doctor` fails
       if one does (D2).
@@ -228,6 +230,9 @@ throwaway copy, so its front matter can be reset between runs).
       `SDD_AGENT=auto` with both installed → picks `claude`.
 - [ ] Exit-code unification (D6): temporarily hide both CLIs from `PATH`, run all four
       agent-backed commands; each prints the manual protocol and exits 1, `align` included.
+- [ ] Align write-before-check (D6): with both CLIs hidden from `PATH`, snapshot the spec, run
+      `sdd align`, and diff — the file must be unchanged. Confirmed failing before T3: the run
+      rewrote `alignment: resolved` and `verify: passed` to `pending` and still exited 0.
 - [ ] Infrastructure vs. spec failure (D5): run `verify` with a deliberately bogus `--model`;
       the spec file must be byte-identical afterwards (`git diff --quiet` on it).
 - [ ] Deny parity (D3): with `SDD_AGENT=copilot`, ask an agent to read `local.properties` and a
@@ -313,3 +318,5 @@ throwaway copy, so its front matter can be reset between runs).
 | 2026-09-13 | ready | verify FAIL: renumbering leftovers — D1's answer still named T3 as the Copilot-install precondition (now T5), and the §9 note wrongly claimed D1 is never cited by label |
 | 2026-09-13 | active | T1 implemented: added `run_agent <agent> <mode> <model> <prompt>` (modes `edit`/`full`/`readonly`) to `scripts/sdd` and routed `cmd_align`, `run_task`, `cmd_verify`, `cmd_fix_ktlint` through it; Claude driver stays inline, prompts/flags/exit codes/front-matter writes unchanged |
 | 2026-09-13 | active | T1 done. Gradle gate found unsatisfiable: `checkCodeQuality`, the `dev` flavour and the ktlint plugin do not exist in this project. §7 criterion replaced with shell/round-trip checks, justified in §10; the build-vs-CLAUDE.md gap is deferred to spec 003 |
+| 2026-09-13 | active | T2 implemented: moved the Claude driver out of `scripts/sdd` into `scripts/lib/driver-claude.sh` (`driver_claude_available`, `driver_claude_run_agent`); added `SDD_AGENT` (`claude\|copilot\|auto`, default `auto`) resolved by binary presence only via `resolve_agent_backend`, no runtime fallback (D6); replaced the 3 Turkish "Claude Code CLI bulunamadı" strings with a neutral English "no agent CLI found" message naming the checked backend(s); a `copilot` resolution fails clearly as "driver not implemented yet (T5)" rather than faking support. `cmd_align`'s exit-0 manual-protocol fallback is unchanged (still T3's job) — only its wording is now neutral/English. Verified `bash -n` on `scripts/sdd` and `scripts/lib/*.sh`, and confirmed the Claude backend's exit codes/messages are unaffected with `claude` present |
+| 2026-09-13 | active | T2 done. Testing T2's exit codes surfaced a third bug in the same family as D5/D6: `cmd_align` resets `alignment`/`verify` to `pending` before checking that a backend exists, so a no-op run invalidates a passing verify. Folded into T3 with a criterion and a test |
