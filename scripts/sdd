@@ -18,11 +18,15 @@ source "$ROOT/scripts/lib/driver-claude.sh"
 # (D6). See specs/refactors/002-copilot-cli-agent-support/spec.md.
 SDD_AGENT="${SDD_AGENT:-auto}"
 
-# Per-agent model selection (premium quota optimisation). Can be overridden via env vars.
-SDD_MODEL_ALIGN="${SDD_MODEL_ALIGN:-opus}"        # strongest — open decision generation
-SDD_MODEL_IMPLEMENT="${SDD_MODEL_IMPLEMENT:-sonnet}"  # medium — code writing
-SDD_MODEL_VERIFY="${SDD_MODEL_VERIFY:-sonnet}"    # medium — read-only inspection
-SDD_MODEL_KTLINT="${SDD_MODEL_KTLINT:-haiku}"     # cheapest — mechanical format fixing
+# Per-role model selection (premium quota optimisation). Each of these env vars,
+# if set, overrides the role's model on WHICHEVER backend ends up resolved —
+# left unset here deliberately (see model_default/model_for_role below): the
+# right default depends on the backend, which isn't known until run_agent
+# resolves it, so no backend-specific literal is baked in at parse time.
+#   SDD_MODEL_ALIGN     — strongest  — open decision generation
+#   SDD_MODEL_IMPLEMENT — medium     — code writing
+#   SDD_MODEL_VERIFY    — medium     — read-only inspection
+#   SDD_MODEL_KTLINT    — cheapest   — mechanical format fixing
 
 ###############################################################################
 # Utility helpers
@@ -201,6 +205,55 @@ list_tasks() { # <spec>
 }
 
 ###############################################################################
+# Model roles (per-driver role→model tables, §3 of spec 002)
+###############################################################################
+
+# Backend-specific default model for a role. bash 3.2 (macOS default) has no
+# associative arrays, hence the case table instead of a map. The "copilot"
+# branch is data only — no copilot dispatch exists yet (scripts/lib/driver-
+# copilot.sh, T5); resolve_agent_backend never returns "copilot" today, so
+# these entries simply sit ready for T5 to start returning it.
+model_default() { # <role> <backend>
+  local role="$1" backend="$2"
+  case "${role}:${backend}" in
+    align:claude)       echo "opus" ;;
+    align:copilot)       echo "claude-opus-5" ;;
+    implement:claude)    echo "sonnet" ;;
+    implement:copilot)   echo "claude-sonnet-5" ;;
+    verify:claude)       echo "sonnet" ;;
+    verify:copilot)      echo "claude-sonnet-5" ;;
+    ktlint:claude)        echo "haiku" ;;
+    ktlint:copilot)       echo "claude-haiku-4.5" ;;
+    *)
+      echo "sdd: no default model for role '$role' on backend '$backend'" >&2
+      return 1
+      ;;
+  esac
+}
+
+# Resolves the model to use for a role on a resolved backend: the role's
+# SDD_MODEL_* env var wins if set (same override names on both backends, per
+# T4/§3); otherwise falls back to that backend's default from model_default.
+model_for_role() { # <role> <backend>
+  local role="$1" backend="$2" override=""
+  case "$role" in
+    align)     override="${SDD_MODEL_ALIGN:-}" ;;
+    implement) override="${SDD_MODEL_IMPLEMENT:-}" ;;
+    verify)    override="${SDD_MODEL_VERIFY:-}" ;;
+    ktlint)    override="${SDD_MODEL_KTLINT:-}" ;;
+    *)
+      echo "sdd: model_for_role: unknown role '$role'" >&2
+      return 1
+      ;;
+  esac
+  if [ -n "$override" ]; then
+    echo "$override"
+  else
+    model_default "$role" "$backend"
+  fi
+}
+
+###############################################################################
 # Agent driver dispatch (backends live in scripts/lib/driver-*.sh)
 ###############################################################################
 
@@ -278,18 +331,22 @@ EOF
 }
 
 # Single seam every agent-backed command dispatches through. Resolves the
-# backend (see resolve_agent_backend) and routes to its driver.
+# backend (see resolve_agent_backend), resolves the role's model on that
+# backend (see model_for_role), and routes to the backend's driver.
 #
-# Usage: run_agent <agent> <mode> <model> <prompt>
+# Usage: run_agent <agent> <mode> <role> <prompt>
 #   <mode>: edit      → --permission-mode acceptEdits
 #           full      → --permission-mode bypassPermissions
 #           readonly  → --permission-mode dontAsk --allowedTools "Task,Read,Grep,Glob"
 #             (also tees combined stdout/stderr into $RUN_AGENT_OUTPUT for
 #              verdict parsing by the caller, e.g. cmd_verify)
+#   <role>: align | implement | verify | ktlint — looked up in model_for_role,
+#           NOT a literal model name (see §3's model-mapping table).
 run_agent() {
-  local agent="$1" mode="$2" model="$3" prompt="$4"
-  local backend
+  local agent="$1" mode="$2" role="$3" prompt="$4"
+  local backend model
   backend="$(resolve_agent_backend)" || return 1
+  model="$(model_for_role "$role" "$backend")" || return 1
   case "$backend" in
     claude)
       driver_claude_run_agent "$agent" "$mode" "$model" "$prompt"
@@ -310,7 +367,7 @@ run_task() { # <spec> <task>
   # prompt. Claude Code's Task tool dispatches to the subagent, which runs in its
   # own context with its own tools (as declared in the agent's frontmatter).
   # Headless (`-p`) + bypassPermissions keeps the run non-interactive; no TUI.
-  run_agent "sdd-implement" "full" "$SDD_MODEL_IMPLEMENT" \
+  run_agent "sdd-implement" "full" "implement" \
     "Use the sdd-implement subagent to implement task $task from spec: $spec"
   code="$(type_code "$(fm_get "$spec" type)")"
   id="$(fm_get "$spec" task_id)"
@@ -384,7 +441,7 @@ cmd_align() {
   # prompt so Claude Code dispatches to it via its Task tool. Headless (`-p`)
   # keeps the run non-interactive: the subagent writes questions into the spec
   # and exits — no TUI, no chat.
-  run_agent "sdd-align" "edit" "$SDD_MODEL_ALIGN" \
+  run_agent "sdd-align" "edit" "align" \
     "Use the sdd-align subagent for spec: $spec"
   echo
   echo "✓ Alignment questions written. Status:"
@@ -517,7 +574,7 @@ cmd_verify() {
   # parseable verdict (D5). That case must leave the front matter untouched and
   # exit non-zero, so it must not fall through to the fm_upsert below, and it
   # must not trip `set -e`'s uncontrolled exit before we can report/clean up.
-  if ! run_agent "sdd-verify" "readonly" "$SDD_MODEL_VERIFY" \
+  if ! run_agent "sdd-verify" "readonly" "verify" \
     "Use the sdd-verify subagent for spec: $spec
 Then relay the subagent's verdict line verbatim as YOUR first line of output: either
 'VERIFY: PASS' or 'VERIFY: FAIL', with nothing before it — not a preamble, not a heading.
@@ -599,7 +656,7 @@ cmd_fix_ktlint() {
   echo "→ Sending files with violations to the kotlin-ktlint agent:"
   echo "$files" | tr ',' '\n' | sed 's/^/  · /'
 
-  run_agent "kotlin-ktlint" "edit" "$SDD_MODEL_KTLINT" \
+  run_agent "kotlin-ktlint" "edit" "ktlint" \
     "Use the kotlin-ktlint subagent to fix the following violations.
 
 ## Files to modify
