@@ -248,10 +248,33 @@ agent_not_found_message() {
     copilot) echo "No agent CLI found: 'copilot' is not on PATH (SDD_AGENT=copilot). See README.md for setup." >&2 ;;
     *)       echo "No agent CLI found: neither 'claude' nor 'copilot' is on PATH (SDD_AGENT=auto). See README.md for setup." >&2 ;;
   esac
+  print_manual_protocol
 }
 
 copilot_not_implemented_message() {
   echo "SDD_AGENT resolved to 'copilot', but the Copilot CLI driver is not implemented yet (scripts/lib/driver-copilot.sh, spec 002 T5). Install 'claude', or set SDD_AGENT=claude." >&2
+  print_manual_protocol
+}
+
+# Shared "no working agent backend" fallback, printed on the error path (before
+# a non-zero exit) by every agent-backed command — align, implement, verify,
+# fix-ktlint alike (D6). Previously this text was align-only and printed on a
+# success path (exit 0); it is now unified across all four commands and always
+# precedes a `return 1` / `exit 1`.
+print_manual_protocol() {
+  cat <<EOF >&2
+
+Manual fallback protocol (do it by hand instead of dispatching an agent):
+  1. Read CLAUDE.md and the target spec yourself.
+  2. Write the alignment questions into the spec's '## Open Decisions (Alignment)' section:
+       N. **Question:** <question>
+       - **Answer:**
+  3. Fill each '- **Answer:**' line by asking the user (don't answer yourself).
+  4. Once answers are filled: ./scripts/sdd align-resolve <spec>  (sets alignment: resolved)
+  5. Review the spec against CLAUDE.md by hand, then: ./scripts/sdd verify <spec>
+  6. Implement tasks by hand, following CLAUDE.md; fix ktlint violations by hand too.
+  See README.md for CLI setup (claude or copilot).
+EOF
 }
 
 # Single seam every agent-backed command dispatches through. Resolves the
@@ -338,6 +361,14 @@ cmd_new() {
 cmd_align() {
   local spec="$1"
   [ -f "$spec" ] || { echo "Spec not found: $spec"; exit 1; }
+
+  # Resolve the backend BEFORE touching the spec (D6): a no-op run (no CLI
+  # available) must leave the file byte-identical, not reset alignment/verify
+  # to 'pending' and then bail. On failure, resolve_agent_backend has already
+  # printed the reason + the shared manual-protocol fallback; just exit.
+  local backend
+  backend="$(resolve_agent_backend)" || exit 1
+
   # Add skeleton if Open Decisions (Alignment) section is missing
   if ! grep -qiE "^#{1,6}.*Open Decisions \(Alignment\)" "$spec"; then
     printf '\n## Open Decisions (Alignment)\n--- Agent fills this in; each item: bold Question line + bold Answer line below it ---\n' >> "$spec"
@@ -348,34 +379,19 @@ cmd_align() {
   fm_upsert "$spec" verify "pending"
   fm_set "$spec" updated "$(today)"
 
-  local backend
-  if backend="$(resolve_agent_backend 2>/dev/null)"; then
-    echo "→ Alignment ($backend): questions will be generated and written into the spec ..."
-    # Subagent definition is in .claude/agents/sdd-align.md; invoked by name in the
-    # prompt so Claude Code dispatches to it via its Task tool. Headless (`-p`)
-    # keeps the run non-interactive: the subagent writes questions into the spec
-    # and exits — no TUI, no chat.
-    run_agent "sdd-align" "edit" "$SDD_MODEL_ALIGN" \
-      "Use the sdd-align subagent for spec: $spec"
-    echo
-    echo "✓ Alignment questions written. Status:"
-    grep -E '^alignment:' "$spec" || true
-    echo "  Next: open the spec, fill each '- **Answer:**' line, then:"
-    echo "    ./scripts/sdd align-resolve $spec"
-    echo "    ./scripts/sdd verify $spec"
-  else
-    cat <<EOF
-→ Alignment (agent-driven) — no agent CLI found, manual protocol:
-  1. Read CLAUDE.md + spec: $spec
-  2. Write the questions into the '## Open Decisions (Alignment)' section:
-       N. **Question:** <question>
-       - **Answer:**
-  3. Fill each '- **Answer:**' line by asking the user (don't answer yourself).
-  4. Once answers are filled: ./scripts/sdd align-resolve \$spec  (sets alignment: resolved)
-  5. Then: ./scripts/sdd verify \$spec  →  ./scripts/sdd start \$spec
-  (No agent CLI found on PATH — SDD_AGENT=$SDD_AGENT. See README.md for setup.)
-EOF
-  fi
+  echo "→ Alignment ($backend): questions will be generated and written into the spec ..."
+  # Subagent definition is in .claude/agents/sdd-align.md; invoked by name in the
+  # prompt so Claude Code dispatches to it via its Task tool. Headless (`-p`)
+  # keeps the run non-interactive: the subagent writes questions into the spec
+  # and exits — no TUI, no chat.
+  run_agent "sdd-align" "edit" "$SDD_MODEL_ALIGN" \
+    "Use the sdd-align subagent for spec: $spec"
+  echo
+  echo "✓ Alignment questions written. Status:"
+  grep -E '^alignment:' "$spec" || true
+  echo "  Next: open the spec, fill each '- **Answer:**' line, then:"
+  echo "    ./scripts/sdd align-resolve $spec"
+  echo "    ./scripts/sdd verify $spec"
 }
 
 cmd_align_resolve() {
