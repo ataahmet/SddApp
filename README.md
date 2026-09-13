@@ -1,6 +1,8 @@
 # Android için Specification-Driven Development
 
-Claude Code CLI ile çalışan, plugin gerektirmeyen, terminal-first bir SDD akışı.
+Claude Code CLI veya GitHub Copilot CLI ile çalışan, plugin gerektirmeyen, terminal-first bir
+SDD akışı. Hangi CLI'ın kullanılacağını `SDD_AGENT` ortam değişkeni seçer (bkz. "Backend
+Seçimi — SDD_AGENT" altında).
 
 ## Kurulum
 
@@ -35,25 +37,77 @@ Claude Code **v2.1.x** ve üzeri gerekir.
 
 *CI/pipeline:* interaktif login yerine `claude setup-token` ile uzun ömürlü token üret.
 
+### 2. GitHub Copilot CLI (ikinci backend)
+
+```bash
+npm i -g @github/copilot     # Node gerekir
+copilot --version
+copilot                      # ilk açılışta GitHub hesabınla giriş ister
+```
+
+Detaylı kurulum/kimlik doğrulama adımları için GitHub'ın resmi dokümanına bak:
+<https://docs.github.com/en/copilot/how-tos/copilot-cli>.
+
+**Durum notu:** Bu backend'in seçim mantığı (`SDD_AGENT`, model tabloları, aşağıda) `scripts/sdd`
+içinde uygulanmış durumda, ama asıl Copilot sürücüsü (`scripts/lib/driver-copilot.sh`) henüz
+yazılmadı — spec `002-copilot-cli-agent-support`'un T5 task'ı. Bugün `copilot` kurulu olsa bile
+`SDD_AGENT=copilot` (ya da `claude` yokken `SDD_AGENT=auto`) çalıştırırsan komut front matter'a
+dokunmadan, net bir hatayla ve **exit 1** ile durur:
+
+```
+SDD_AGENT resolved to 'copilot', but the Copilot CLI driver is not implemented yet
+(scripts/lib/driver-copilot.sh, spec 002 T5). Install 'claude', or set SDD_AGENT=claude.
+```
+
+Sürücü tamamlanınca bu not kaldırılacak; o zamana kadar `claude` kurulu tutmak gerekir.
+
+### 3. Backend Seçimi — SDD_AGENT
+
+`scripts/sdd`, dört agent çağrısını da (`align`, `implement`, `verify`, `fix-ktlint`) tek bir
+driver seçimi üzerinden yapar; hangi CLI'ın kullanılacağını `SDD_AGENT` ortam değişkeni seçer:
+
+| Değer | Davranış |
+|-------|----------|
+| `claude` | Sadece `claude` CLI'ını arar; yoksa hata basıp exit 1 |
+| `copilot` | Sadece `copilot` CLI'ını arar; sürücü henüz yazılmadı (yukarıya bak) |
+| `auto` (**varsayılan**) | Önce `claude`, yoksa `copilot` — sadece ikilinin PATH'te olup olmadığına bakar |
+
+Seçim **yalnızca ikilinin PATH'te bulunmasına** bakar; kimlik doğrulama/kota gibi çalışma zamanı
+arızalarında **başka backend'e otomatik geçiş yapmaz** — hangi modelin spec'i yazdığı
+belirsizleşmesin diye kasıtlı bir tasarım kararı. Hiçbir CLI bulunamazsa dört komut da manuel
+protokolü basıp **exit 1** ile durur (bkz. aşağıdaki "Breaking Changes" notu, `align` dahil).
+
+```bash
+SDD_AGENT=claude  ./scripts/sdd verify <spec>   # açıkça Claude
+SDD_AGENT=copilot ./scripts/sdd verify <spec>   # açıkça Copilot (sürücü tamamlanınca)
+./scripts/sdd verify <spec>                     # SDD_AGENT=auto (varsayılan)
+```
+
 ## Klasör Yapısı
 
 ```
 proje-kökü/
 ├── CLAUDE.md                      #  proje mimari kuralları (araçtan bağımsız, tek kaynak)
-├── .claude/
-│   ├── settings.json              # proje izinleri (allow / ask / deny)
-│   ├── agents/                    # özel Claude Code agent'ları (subagent)
-│   │   ├── sdd-align.md           # `sdd align` bu agent'ı kullanır
-│   │   ├── sdd-implement.md       # `sdd implement` bu agent'ı kullanır
-│   │   ├── sdd-verify.md          # `sdd verify` bu agent'ı kullanır
-│   │   └── kotlin-ktlint.md       # `sdd fix-ktlint` bu agent'ı kullanır
-│   └── commands/                  # interaktif oturum için slash komutları
-│       ├── sdd-align.md           # /sdd-align
-│       ├── sdd-verify.md          # /sdd-verify
-│       ├── sdd-implement.md       # /sdd-implement
-│       └── sdd-fix-ktlint.md      # /sdd-fix-ktlint
+├── .claude/                       # Claude Code backend'i
+│   ├── settings.json              # proje izinleri; `deny` dizisi deny-list.txt'den ÜRETİLİR
+│   └── agents/                    # agent tanımları — elle düzenlenen TEK KAYNAK
+│       ├── sdd-align.md           # `sdd align` bu agent'ı kullanır
+│       ├── sdd-implement.md       # `sdd implement` bu agent'ı kullanır
+│       ├── sdd-verify.md          # `sdd verify` bu agent'ı kullanır
+│       └── kotlin-ktlint.md       # `sdd fix-ktlint` bu agent'ı kullanır
+├── .github/                       # GitHub Copilot CLI backend'i
+│   ├── copilot-instructions.md    # ince pointer: @CLAUDE.md + spec-first kuralı
+│   └── agents/                    # ÜRETİLEN — elle düzenleme, `sdd sync-agents` çalıştır
+│       ├── sdd-align.agent.md
+│       ├── sdd-implement.agent.md
+│       ├── sdd-verify.agent.md
+│       └── kotlin-ktlint.agent.md
 ├── scripts/
-│   └── sdd                        # ana CLI script (chmod +x)
+│   ├── sdd                        # ana CLI script (chmod +x)
+│   └── lib/
+│       ├── driver-claude.sh       # Claude Code backend sürücüsü
+│       ├── driver-copilot.sh      # Copilot CLI backend sürücüsü (T5 — henüz yok)
+│       └── deny-list.txt          # gizli dosya/komut deny'lerinin tek kaynağı
 └── specs/
     ├── templates/
     │   ├── feature.md
@@ -284,23 +338,32 @@ Claude Code `.claude/agents/*.md` altındaki agent'ları **otomatik tanır**; am
 devreye girmezler — `--agent <ad>` ile açıkça seçilirler. `scripts/sdd` bu seçimi senin yerine
 yapar. İnteraktif oturumda `@agent-sdd-verify` ile de çağırabilirsin.
 
-| Agent | Kullanan komut | Model (varsayılan) | Tool'lar | Görev |
-|-------|---------------|--------------------|----------|-------|
-| `sdd-align` | `sdd align` | `opus` (en güçlü) | Read, Grep, Glob, Edit, Write, AskUserQuestion, Bash | Açık kararları üretir, kullanıcıya sorar, cevapları yazar |
-| `sdd-implement` | `sdd implement` | `sonnet` (orta) | Read, Grep, Glob, Edit, Write, Bash | Spec'teki tek task'ı CLAUDE.md kurallarıyla uygular |
-| `sdd-verify` | `sdd verify` | `sonnet` (orta) | Read, Grep, Glob | Spec'i CLAUDE.md ile karşılaştırır, salt-okunur denetim |
-| `kotlin-ktlint` | `sdd fix-ktlint` | `haiku` (en ucuz) | Read, Grep, Glob, Edit | ktlint stil/format ihlallerini düzeltir (mekanik) |
+`.claude/agents/*.md` tek kaynaktır; `./scripts/sdd sync-agents` bunlardan Copilot'un okuduğu
+`.github/agents/*.agent.md` dosyalarını üretir (frontmatter çevrilir, gövde birebir kopyalanır,
+"GENERATED — do not edit by hand" başlığı eklenir). Üretilen dosyalarda `model:` alanı **bilerek
+yok** — model seçimi her zaman driver'ın `--model` bayrağından gelir, aksi halde agent
+frontmatter'ı `SDD_MODEL_*` override'larını ezerdi.
 
-Modeller `scripts/sdd` başındaki `SDD_MODEL_*` değişkenlerinde; env ile override edilebilir:
+| Agent | Kullanan komut | Model — Claude | Model — Copilot | Env override | Tool'lar (Claude) | Görev |
+|-------|---------------|-----------------|-------------------|---------------|--------------------|-------|
+| `sdd-align` | `sdd align` | `opus` (en güçlü) | `claude-opus-5` | `SDD_MODEL_ALIGN` | Read, Grep, Glob, Edit, Write, AskUserQuestion, Bash | Açık kararları üretir, kullanıcıya sorar, cevapları yazar |
+| `sdd-implement` | `sdd implement` | `sonnet` (orta) | `claude-sonnet-5` | `SDD_MODEL_IMPLEMENT` | Read, Grep, Glob, Edit, Write, Bash | Spec'teki tek task'ı CLAUDE.md kurallarıyla uygular |
+| `sdd-verify` | `sdd verify` | `sonnet` (orta) | `claude-sonnet-5` | `SDD_MODEL_VERIFY` | Read, Grep, Glob | Spec'i CLAUDE.md ile karşılaştırır, salt-okunur denetim |
+| `kotlin-ktlint` | `sdd fix-ktlint` | `haiku` (en ucuz) | `claude-haiku-4.5` | `SDD_MODEL_KTLINT` | Read, Grep, Glob, Edit | ktlint stil/format ihlallerini düzeltir (mekanik) |
+
+Copilot'taki gerçek model erişimi plana bağlıdır; yukarıdaki Copilot sütunu, sürücü
+tamamlandığında (T5) hedeflenen eşleşmedir. Env override'lar backend'den bağımsız aynı isimle
+çalışır — hangi backend seçilirse seçilsin `SDD_MODEL_*` set edilmişse o kazanır, yoksa
+tablodaki varsayılan kullanılır:
 
 ```bash
 SDD_MODEL_KTLINT=haiku ./scripts/sdd fix-ktlint
 SDD_MODEL_VERIFY=opus  ./scripts/sdd verify <spec>
 ```
 
-Alias (`opus` / `sonnet` / `haiku`) ya da tam model id (`claude-sonnet-5`) kullanılabilir.
-Premium kotayı yalnız değer kattığı yerde harca (align = en güçlü); mekanik iş (ktlint) en ucuz
-modelde.
+Claude tarafında alias (`opus` / `sonnet` / `haiku`) ya da tam model id (`claude-sonnet-5`)
+kullanılabilir. Premium kotayı yalnız değer kattığı yerde harca (align = en güçlü); mekanik iş
+(ktlint) en ucuz modelde.
 
 ## İzinler
 
@@ -313,6 +376,25 @@ SDD_PERM_IMPLEMENT=acceptEdits ./scripts/sdd implement <spec> T1
 ```
 
 `deny` kuralları her modda geçerlidir; `bypassPermissions` bile onları aşamaz.
+
+## Breaking Changes (Copilot desteği, spec 002)
+
+Copilot backend'i eklenirken Claude tarafında da iki kasıtlı, dar kapsamlı davranış değişti:
+
+1. **`sdd align`, CLI bulunamazsa artık exit 1 verir (önceden exit 0).** Eskiden hiçbir agent
+   CLI'ı yokken `align` manuel protokolü basıp başarıyla (exit 0) çıkardı; bunu "başarı" sayan
+   herhangi bir script artık güncellenmeli. Manuel protokol metni aynen korunuyor, sadece artık
+   hata yolunda basılıyor. Ayrıca `align` artık front matter'ı (`alignment`/`verify: pending`)
+   backend kontrolünden **önce değil sonra** yazıyor — CLI yoksa spec dosyası hiç değişmiyor.
+2. **`sdd verify`, altyapı hatasında front matter'a artık yazmıyor.** Komut çalışmadan biten bir
+   run (eksik binary, reddedilen `--model` gibi bir bayrak) artık `verify: failed` yazmıyor;
+   front matter'ı olduğu gibi bırakıp exit'i non-zero döndürüyor. Buna karşılık, CLI gerçekten
+   çalışıp bitmiş ama çıktısında ayrıştırılabilir bir `VERIFY:` satırı yoksa, davranış eskisi
+   gibi `verify: failed` yazmaya devam ediyor.
+
+Bunların ikisi de yalnız Claude backend'inde davranış değişikliği; Copilot backend'i zaten
+Claude'dan daha kısıtlı izinlerle çalışacak şekilde tasarlandı (bkz. İzinler), yani "davranış
+aynı kaldı" iddiası sadece Claude için geçerli.
 
 ## Slash Komutları (interaktif oturum)
 
@@ -357,8 +439,11 @@ CLAUDE.md'ye ekle, CLAUDE.md sadece import + Claude'a özgü notlar kalsın.
 
 ## Sınırlamalar
 
-- Bu kit Claude Code CLI'a optimize. Copilot/Cursor/Aider kullanıyorsan `scripts/sdd`'nin
-  `claude` çağrılarını ilgili tool'a çevir (CLAUDE.md ve spec'ler aynı kalır).
+- Bu kit iki backend hedefler: Claude Code CLI ve GitHub Copilot CLI (`SDD_AGENT=claude|copilot|
+  auto`, bkz. Kurulum). Copilot tarafı şu an iskelet halinde: backend seçimi ve model tabloları
+  hazır, ama gerçek sürücü (`scripts/lib/driver-copilot.sh`) henüz yazılmadı — `SDD_AGENT=copilot`
+  net bir "henüz yok" hatasıyla durur, elle çeviri gerekmez. Cursor/Aider gibi başka araçlar için
+  hâlâ destek yok.
 - `sdd align` interaktif terminal ister; CI'da çalışmaz (manuel protokol basar).
 - CLAUDE.md değişikliği takım onayı gerektirir — solo proje değilsen.
 - Spec yazmak overhead. Çok küçük işler için zorlama.

@@ -54,7 +54,7 @@ secret-file denies (`local.properties`, `secrets.properties`, `.env`, `*.jks`, `
 `git push --force`.
 
 **Known gap (pre-existing):** `README.md` documents a `.claude/commands/` directory that does not
-exist in the repo. Out of scope here; see §2 of the Excluded list.
+exist in the repo. Out of scope here; see the Excluded list in §3.
 
 ## 3. Target State
 
@@ -80,15 +80,23 @@ Copilot CLI equivalents, taken from the GitHub documentation on 2026-09-13:
 | Agent definition | `.claude/agents/x.md` | `.github/agents/x.agent.md` (`description` required; `name`, `tools`, `model`, `target`) |
 | Agent dispatch | `"Use the x subagent"` in prompt | `--agent x` flag |
 | Tools | `Read, Grep, Glob, Edit, Write, Bash` | `read, search, edit, write, shell` |
-| Edit permission | `--permission-mode acceptEdits` | `--allow-tool='read,edit,write'` |
-| Read-only | `--permission-mode dontAsk` + `--allowedTools` | `--allow-tool='read' --deny-tool='write,shell'` |
+| Edit permission | `--permission-mode acceptEdits` | `--allow-tool='read,search,edit,write'` |
+| Full (implement) | `--permission-mode bypassPermissions` | `--allow-tool='read,search,edit,write,shell'` |
+| Read-only | `--permission-mode dontAsk` + `--allowedTools` | `--allow-tool='read,search' --deny-tool='write,shell'` |
 | Clean stdout for verdict parsing | default | `-s` (required, or the banner breaks the `VERIFY:` grep) |
 | Model | `--model opus` | `--model=claude-opus-5` (agent frontmatter > `--model` > `COPILOT_MODEL`) |
 
-`.claude/agents/*.md` stays the **single source**; `sdd sync-agents` generates the `.github/agents/`
+**Two axes, not one.** An agent's `tools:` frontmatter decides which tools *exist* for that
+agent; `--allow-tool` decides which of them run *without a prompt*. A headless `-p` run needs a
+tool in both lists, so every mode's allow list above is a superset of what the agents it
+dispatches declare — `search` in particular, since all four agents translate `Grep`/`Glob` into
+it. `--deny-tool` then subtracts, and wins.
+
+`.claude/agents/*.md` stays the **single source** (pre-settled decision P3); `sdd sync-agents` generates the `.github/agents/`
 counterparts (frontmatter translated, body copied verbatim, `GENERATED — do not edit` banner).
 
-**Model mapping** — same Anthropic models on both sides where the Copilot plan offers them:
+**Model mapping (pre-settled decision P1)** — same Anthropic models on both sides where the
+Copilot plan offers them:
 
 | Role | Claude Code | Copilot CLI | Env override |
 |---|---|---|---|
@@ -129,18 +137,18 @@ silent degradation).
 
 ## 4. Affected Files
 
-- [ ] `scripts/sdd` — driver layer, model roles, `sync-agents`, `doctor`, neutral error strings
-- [ ] `scripts/lib/driver-claude.sh` — new
+- [x] `scripts/sdd` — driver layer, model roles, `sync-agents`, `doctor`, neutral error strings
+- [x] `scripts/lib/driver-claude.sh` — new
 - [ ] `scripts/lib/driver-copilot.sh` — new
-- [ ] `scripts/lib/deny-list.txt` — new, shared secret-file deny source
-- [ ] `.claude/settings.json` — its `deny` array becomes generated from `deny-list.txt` (D3); `allow`/`ask` stay hand-maintained
-- [ ] `.claude/agents/sdd-align.md` — "How you are launched" made tool-neutral
-- [ ] `.claude/agents/sdd-implement.md` — same
-- [ ] `.claude/agents/sdd-verify.md` — same
-- [ ] `.claude/agents/kotlin-ktlint.md` — same
-- [ ] `.github/agents/*.agent.md` — new, generated
-- [ ] `.github/copilot-instructions.md` — new
-- [ ] `README.md` — Copilot CLI section; remove the "convert it yourself" note (L360–361)
+- [x] `scripts/lib/deny-list.txt` — new, shared secret-file deny source
+- [x] `.claude/settings.json` — its `deny` array becomes generated from `deny-list.txt` (D3); `allow`/`ask` stay hand-maintained
+- [x] `.claude/agents/sdd-align.md` — "How you are launched" made tool-neutral
+- [x] `.claude/agents/sdd-implement.md` — same
+- [x] `.claude/agents/sdd-verify.md` — same
+- [x] `.claude/agents/kotlin-ktlint.md` — same
+- [x] `.github/agents/*.agent.md` — new, generated
+- [x] `.github/copilot-instructions.md` — new
+- [x] `README.md` — Copilot CLI section; remove the "convert it yourself" note (L360–361)
 
 ## 5. Breaking Changes
 
@@ -173,7 +181,7 @@ silent degradation).
 - [x] T9 – Add `.github/copilot-instructions.md` pointing at `CLAUDE.md` (`@CLAUDE.md`) plus the SDD "read the spec before writing code" rule.
 - [x] T10 – Add `scripts/lib/deny-list.txt` as the single deny source and generate the `deny` array of `.claude/settings.json` from it, leaving `allow`/`ask` hand-maintained (D3). The driver-side expansion of this file belongs to T5, which builds the driver.
 - [ ] T11 – Add `sdd doctor`: resolved backend, CLI version, accepted models, a flag-support pre-flight probe (D5), per-entry deny coverage (D3), a `model:`-absence assertion on generated agents (D2), and `.github/agents/` drift detection.
-- [ ] T12 – Update `README.md`: Copilot CLI setup, `SDD_AGENT` usage, the driver/model tables, the two §5 breaking changes, and drop the stale "Copilot kullanıyorsan kendin çevir" note.
+- [x] T12 – Update `README.md`: Copilot CLI setup, `SDD_AGENT` usage, the driver/model tables, the two §5 breaking changes, and drop the stale "Copilot kullanıyorsan kendin çevir" note.
 
 ## 7. Acceptance Criteria
 
@@ -185,31 +193,31 @@ silent degradation).
 - [ ] With `SDD_AGENT=copilot`, `sdd align <spec>` writes questions into the `## Open Decisions
       (Alignment)` section in the script-parseable format, and `align-resolve` accepts them.
 - [ ] With `SDD_AGENT=copilot`, `sdd implement <spec> T1` applies one task and stops.
-- [ ] A run that fails before producing output (missing binary, rejected flag) leaves the spec's
+- [x] A run that fails before producing output (missing binary, rejected flag) leaves the spec's
       front matter byte-identical and exits non-zero; only a completed run with no parseable
       `VERIFY:` line writes `verify: failed` (D5).
 - [ ] `SDD_AGENT=auto` resolves by binary presence only and never switches backend at runtime;
       a missing CLI exits 1 from all four agent-backed commands, `align` included (D6).
-- [ ] `sdd align` with no backend available leaves the spec file byte-identical — in particular
+- [x] `sdd align` with no backend available leaves the spec file byte-identical — in particular
       it does not reset `alignment` or `verify` (D6).
-- [ ] `sdd sync-agents` is idempotent: running it twice leaves `git status` clean.
+- [x] `sdd sync-agents` is idempotent: running it twice leaves `git status` clean.
 - [ ] No generated `.github/agents/*.agent.md` contains a `model:` key, and `sdd doctor` fails
-      if one does (D2).
+      if one does (D2). *First half verified after T7; the `sdd doctor` half waits on T11.*
 - [ ] `sdd doctor` exits non-zero when `.github/agents/` has drifted from `.claude/agents/`;
       the Copilot driver warns on drift but still runs and never auto-regenerates (D7).
 - [ ] Every entry in `scripts/lib/deny-list.txt` is covered on the Copilot backend by either a
       `--deny-tool` flag or `--add-dir` path narrowing; `sdd doctor` reports which, and exits
       non-zero if any entry is covered by neither (D3).
-- [ ] The `deny` array of `.claude/settings.json` matches `scripts/lib/deny-list.txt`, and its
+- [x] The `deny` array of `.claude/settings.json` matches `scripts/lib/deny-list.txt`, and its
       `allow`/`ask` arrays are unchanged by this refactor (D3).
 - [x] `.github/copilot-instructions.md` exists, resolves `CLAUDE.md` through an `@CLAUDE.md`
       reference rather than restating any rule, and states the spec-first rule (T9).
-- [ ] `README.md` documents Copilot CLI setup, `SDD_AGENT`, the model table and both §5
+- [x] `README.md` documents Copilot CLI setup, `SDD_AGENT`, the model table and both §5
       breaking changes, and no longer tells the reader to convert the `claude` calls by hand (T12).
 - [ ] `bash -n scripts/sdd` and `bash -n scripts/lib/*.sh` parse cleanly after every task.
 - [ ] A full `new -> ready -> align -> align-resolve -> verify -> start -> implement` round trip
       succeeds end to end on a scratch spec, once per backend (this replaces the gradle gate;
-      see the third entry in §10).
+      see the second entry in §10).
 - [ ] `git status --short` shows no file outside §4 modified by any task.
 - [ ] No file under `app/`, `specs/templates/` or the CLAUDE.md §9.1 lifecycle is modified.
 
@@ -265,7 +273,7 @@ throwaway copy, so its front matter can be reset between runs).
 3. **Question:** `.claude/settings.json` denies *paths* (`local.properties`, `secrets.properties`, `.env`, `*.jks`, `*.keystore`), while Copilot's `--deny-tool` is tool-granular, not path-granular. If the installed Copilot CLI cannot express a path-level deny, what is the required behaviour: a coarser policy (deny `write`/`shell`, read-only where possible) that accepts the residual read risk, refusal to run the Copilot backend at all, or a pre-flight guard in the driver? And which of `scripts/lib/deny-list.txt` vs `.claude/settings.json` is the generated artefact in T8?
    - **Answer:** `scripts/lib/deny-list.txt` is the hand-edited source; the `deny` array of `.claude/settings.json` is generated from it (the `allow`/`ask` arrays stay hand-maintained and untouched). Copilot's `--deny-tool` accepts a plain path filter but supports wildcards only for `shell` and `url`, so the driver expands every literal path entry into `--deny-tool` and, for glob entries it cannot express (`*.jks`, `*.keystore`), narrows the agent's reachable paths with `--add-dir` instead of relying on a deny it cannot state. Refusing the Copilot backend is not acceptable, and the residual risk is not silently accepted: `sdd doctor` lists which deny entries are enforced by flag and which by path narrowing, and exits non-zero if any entry is covered by neither.
 4. **Question:** `run_task` currently uses `--permission-mode bypassPermissions` (full shell, including gradle and git). What is the Copilot-side equivalent for `implement` — blanket `--allow-all-tools`, or an explicit allow list `read,edit,write,shell` combined with denies for destructive commands (`git push --force`, `rm`)? Must the two backends have identical effective permission breadth, or is the Copilot path allowed to be stricter (which would make T1's "no behaviour change" claim backend-dependent)?
-   - **Answer:** Not `--allow-all-tools`. The Copilot `implement` mode uses an explicit allow list (`read,edit,write,shell`) plus the denies derived from `deny-list.txt`, including destructive shell commands (`git push --force`, `rm`). The two backends are therefore deliberately *not* identical in permission breadth: the Copilot path is stricter. T1's "no behaviour change" claim is scoped to the Claude backend only and §5 / §7 are worded accordingly.
+   - **Answer:** Not `--allow-all-tools`. The Copilot `implement` mode uses an explicit allow list (`read,search,edit,write,shell` — `search` included because every agent declares `Grep`/`Glob`, which translates to it) plus the denies derived from `deny-list.txt`, including destructive shell commands (`git push --force`, `rm`). The two backends are therefore deliberately *not* identical in permission breadth: the Copilot path is stricter. T1's "no behaviour change" claim is scoped to the Claude backend only and §5 / §7 are worded accordingly.
 5. **Question:** What should the driver do when the installed Copilot CLI rejects a flag the design depends on (`--agent`, `-s`, `--allow-tool`/`--deny-tool`) or produces no parseable `VERIFY:` line? Options: fail fast with a clear error and leave the front matter untouched, keep today's `cmd_verify` behaviour of writing `verify: failed` on an inconclusive run, or degrade by inlining the agent body into the prompt instead of using `--agent`.
    - **Answer:** Infrastructure failure and spec failure are separated. If the installed CLI rejects a required flag, or the process fails before producing output, the driver fails fast with a clear error and leaves the front matter **untouched** (today's code wrongly records `verify: failed` for this case). Only a run that actually completed but produced no parseable `VERIFY:` line keeps the current behaviour of writing `verify: failed`. No silent degradation to prompt-inlining: `--agent` is required, and a pre-flight capability probe in `sdd doctor` reports flag support up front.
 6. **Question:** How exactly should `SDD_AGENT=auto` resolve, and should the missing-CLI behaviour be unified? Today `cmd_align` degrades to a printed manual protocol and exits 0, while `cmd_verify`/`cmd_fix_ktlint` exit 1. Should `auto` only check for the binary, or also fall back to `copilot` when `claude` is present but unauthenticated/quota-exhausted at runtime — and should the manual-protocol fallback survive in the driver layer for all four commands or be dropped?
@@ -300,6 +308,14 @@ throwaway copy, so its front matter can be reset between runs).
   close this spec until 003 lands - `status: done` is set by hand here, with the §7 criteria
   above standing in as the evidence.
 
+- **§9.1 says tasks are applied in order; T5 and T11 were deferred past T6–T10 and T12.** Both
+  need the GitHub Copilot CLI installed and authenticated, which D1 makes a precondition of T5
+  and which is not yet true on this machine. Rather than idle, the tasks that need no live
+  Copilot were taken first. The numbering is kept as written so the D-label citations stay
+  stable, and the dependency runs the other way from the numbers in one place: T5 consumes
+  `scripts/lib/deny-list.txt`, which T10 creates. Nothing merges until T5 and T11 are done and
+  every §7 criterion is ticked, so the ordering changes when work happened, not what ships.
+
 - **§9.1 requires a Test Plan, but `specs/templates/refactor.md` has no such section.** This spec
   adds `## 8. Test Plan` and shifts the following sections to §9–§11. The template itself is
   deliberately left untouched (out of scope per §3); if the gap should be fixed at the template
@@ -328,4 +344,8 @@ throwaway copy, so its front matter can be reset between runs).
 | 2026-09-13 | active | T8 implemented: rewrote the "How you are launched" section in all four `.claude/agents/*.md` bodies so none of them names Claude Code or its Task tool as the only dispatch path. `sdd-align.md`, `sdd-implement.md` and `sdd-verify.md` had an existing section that hardcoded "calls the main Claude session ... Claude Code dispatches to you via the Task tool" — each is now phrased as "dispatches you through whichever agent CLI backend is active (`SDD_AGENT=claude` or `SDD_AGENT=copilot`)", followed by one sentence naming both concrete mechanisms (the `Use the <agent> subagent ...` prompt routed through a subagent tool on Claude, the `--agent <agent>` flag on Copilot) so the wording stays accurate rather than vague. `kotlin-ktlint.md` had no such section at all (it is dispatched by `cmd_fix_ktlint`'s `run_agent` call the same as the other three, so the omission was an inconsistency, not a deliberate exclusion) — added one in the same tool-neutral phrasing, placed after the agent's one-line role summary and before `## Input`. No other section of any of the four files was touched. Re-ran `./scripts/sdd sync-agents`, which regenerated all four `.github/agents/*.agent.md` files with the new body wording (bodies are copied verbatim by T7's generator, frontmatter unaffected). Verified with `bash -n` on `scripts/sdd` and `scripts/lib/*.sh`; `grep -n "How you are launched" -A5` on the regenerated `.github/agents/*.agent.md` files confirms the new wording landed; `git status --short` shows exactly the four `.claude/agents/*.md` files and the four `.github/agents/*.agent.md` files as modified — nothing under `app/`, `specs/templates/` or the CLAUDE.md §9.1 lifecycle |
 | 2026-09-13 | active | T9 implemented: added `.github/copilot-instructions.md` as a thin pointer file — a single `@CLAUDE.md` reference line (the exact `@`-reference syntax documented at the "add-custom-instructions" URL cited in §3), a one-line note that the referenced rules are authoritative and must not be restated, and a short "Spec-first rule (SDD)" section stating in the agent's own words (not copied verbatim) CLAUDE.md §9.1's "Agent rule (non-negotiable)": read the spec under `specs/` before writing code, do not code against a `draft`/`blocked` spec, and implement only the requested task. Written entirely in English per D8, since it is new file content this refactor touches. Verified by re-reading the file against every other CLAUDE.md heading (Architecture & Data Flow, Technology, Dependency Injection) to confirm none of that content is echoed here — the file's only substantive content is the `@CLAUDE.md` reference and the spec-first rule, nothing else. Ran `bash -n scripts/sdd` and `bash -n scripts/lib/*.sh`, both clean (unaffected, as expected — no shell script touched). `git status --short` shows exactly `.github/copilot-instructions.md` (new) and this spec file (modified) — nothing under `app/`, `specs/templates/` or elsewhere |
 | 2026-09-13 | active | T10's second half needed a Copilot driver that T5 has not built yet. Moved the deny-list expansion into T5 and left T10 as the deny source plus the settings.json generation, so no criterion depends on an untasked step |
-| 2026-09-13 | active | T10 implemented: added `scripts/lib/deny-list.txt` as the single, backend-neutral deny source (D3) — one entry per line (`secrets.properties`, `local.properties`, `.env`, `*.jks`, `*.keystore`, `git push --force`), same set and order as today's `.claude/settings.json` deny array, plus a comment header documenting the entry shape (literal / glob / multi-word-command) that both this generator and T5's Copilot driver rely on. Added `deny_entry_to_claude` (maps a neutral entry to Claude's permission-string syntax: multi-word → `Bash(<entry> *)`, single word with `*` → `Read(**/<entry>)`, else → `Read(./<entry>)`) and `sync_claude_settings_deny` to `scripts/sdd`, wired as the last step of `cmd_sync_agents` (kept a single, already-idempotent regeneration entry point rather than adding a new subcommand, per the task's own D3 wording that only the generation itself — not a new command — was asked for). `sync_claude_settings_deny` rewrites only the `"deny": [ ... ]` block of `.claude/settings.json` line-for-line in pure bash (state machine over `IFS= read -r`), leaving `defaultMode`, `allow` and `ask` byte-identical; a first attempt used `awk -v entries="$(printf '%s\n' ...)"` but macOS's shipped one-true-awk corrupts a `-v` value containing embedded newlines (silently truncated the whole file to empty) — replaced with the bash-only version once that surfaced, and re-verified. Verified with `bash -n scripts/sdd` and `bash -n scripts/lib/*.sh`; ran `./scripts/sdd sync-agents` against the real `.claude/settings.json`, diffed it byte-for-byte against a copy taken before the run (`diff -u` empty, i.e. the generated `deny` array reproduces today's array exactly and `allow`/`ask` are untouched), then ran it a second time and confirmed `git status --short` was identical before/after (idempotent). Final `git status --short`: `scripts/sdd` (modified, deny-array generator + usage text), `specs/refactors/002-copilot-cli-agent-support/spec.md` (modified, this changelog entry), `scripts/lib/deny-list.txt` (new); `.claude/settings.json` and `.github/agents/*.agent.md` show no diff since the regenerated content matches the already-committed files exactly — nothing under `app/`, `specs/templates/` or the CLAUDE.md §9.1 lifecycle touched. Note: `.claude/settings.json` is not listed in this spec's §4 Affected Files table even though T10's own task text and D3 require generating it; treated as a pre-existing gap in §4, not fixed here per this task's "only touch what's needed" scope. |
+| 2026-09-13 | active | T12 implemented: updated `README.md` (Turkish, per D8) — intro line now names both backends and points at the new `SDD_AGENT` section; `## Kurulum` gained "### 2. GitHub Copilot CLI" (`npm i -g @github/copilot` per D1, plus the official CLI docs link) and "### 3. Backend Seçimi — SDD_AGENT" (the `claude\|copilot\|auto` table, binary-presence-only resolution, no runtime fallback, per D6); `## Özel Agent'lar` gained the Copilot model column and `SDD_MODEL_*` env-override column from §3's role→model table, plus a note that `sync-agents` deliberately omits `model:` from generated files (D2); a new `## Breaking Changes (Copilot desteği, spec 002)` section documents both §5 changes (D6: `align` now exits 1 with front matter untouched instead of exit 0; D5: infrastructure failure leaves front matter untouched, only a completed-but-unparseable run still writes `verify: failed`); the stale `## Sınırlamalar` note telling the reader to hand-translate `claude` calls for Copilot/Cursor/Aider was replaced with an accurate one naming `SDD_AGENT` and the current gap. Judgment call on the T5/T11 dependency gap: T5 (`scripts/lib/driver-copilot.sh`) and T11 (`sdd doctor`) are not implemented yet — verified by `grep` on `scripts/sdd`/`scripts/lib/` before writing (no `driver-copilot.sh` file, no `doctor` case in the dispatcher). Rather than silently documenting Copilot as fully usable, every new Copilot-facing subsection carries an explicit "Durum notu" stating the driver is not wired up yet (T5), quoting the actual `copilot_not_implemented_message` string verbatim so the README doesn't drift from the real error text, and the model table's Copilot column is labelled as the T5 target rather than a working default. No `sdd doctor` command, flag, or output is mentioned anywhere (T11 not landed). Everything documented as already working (`SDD_AGENT` resolution, the model tables/env overrides, both §5 breaking changes) was re-verified against the current `scripts/sdd` source (T1–T4, T6 done) before being written. Verified `bash -n scripts/sdd` and `bash -n scripts/lib/*.sh` (both clean, unaffected as expected); `git status --short` shows only `README.md` and this spec file changed — nothing under `app/`, `specs/templates/` or the CLAUDE.md §9.1 lifecycle. No gradle command run, per §10's existing gradle-gate deviation for this spec |
+| 2026-09-13 | active | T10 implemented: `scripts/lib/deny-list.txt` added as the single backend-neutral deny source, and the `deny` array of `.claude/settings.json` generated from it via `deny_entry_to_claude` + `sync_claude_settings_deny`, wired into `sync-agents`. `allow`/`ask`/`defaultMode` untouched; regeneration reproduces the array byte-for-byte and is idempotent. Worth recording: a first attempt used `awk -v` with embedded newlines, which macOS's one-true-awk silently truncates to an empty file — replaced with a pure-bash rewrite. `.claude/settings.json` was missing from §4 and has now been added there |
+| 2026-09-13 | active | T12 done. verify FAIL on document self-consistency: two broken cross-references, and the T10 changelog row contradicting §4 about `.claude/settings.json`. Fixed, P1/P3 now cited inline in §3, and §4's boxes ticked for landed work |
+| 2026-09-13 | active | verify FAIL: §7 boxes lagged the work, and the T5/T11 deferral was an unlogged §9.1 task-order deviation. Ticked the five criteria verified live, split the `model:` criterion so its `sdd doctor` half stays open for T11, and logged the ordering in §10 |
+| 2026-09-13 | active | verify FAIL caught a real bug bound for T5: §3's allow lists omitted `search`, which every agent's `Grep`/`Glob` translates to, so the driver would have blocked search for all four. Allow lists corrected, the `full` mode row added, and the tools-vs-allow-tool interaction stated |
