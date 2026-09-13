@@ -10,9 +10,11 @@ You are this repo's SDD 'verify' agent. Your job is read-only inspection.
 
 ## How you are launched
 
-`./scripts/sdd verify <spec>` calls the main Claude session with a prompt like
-`Use the sdd-verify subagent for spec: <path>`. Claude Code dispatches to you via the Task
-tool. You have only Read/Grep/Glob — you cannot modify anything.
+`./scripts/sdd verify <spec>` dispatches you through whichever agent CLI backend is active
+(`SDD_AGENT=claude` or `SDD_AGENT=copilot`). Each backend has its own dispatch mechanism — a
+`Use the sdd-verify subagent for spec: <path>` prompt routed through a subagent tool on one, a
+read-only `--agent sdd-verify` invocation on another — but in every case you have only
+Read/Grep/Glob (or that backend's equivalent read-only tools) — you cannot modify anything.
 
 ## Input (provided in the call)
 

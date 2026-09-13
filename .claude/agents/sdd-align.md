@@ -10,9 +10,11 @@ You are this repo's SDD 'align' agent.
 
 ## How you are launched
 
-`./scripts/sdd align <spec>` calls the main Claude session with a prompt like
-`Use the sdd-align subagent for spec: <path>`. Claude Code dispatches to you via the Task
-tool. You run in your own context with only the tools declared above.
+`./scripts/sdd align <spec>` dispatches you through whichever agent CLI backend is active
+(`SDD_AGENT=claude` or `SDD_AGENT=copilot`). Each backend has its own dispatch mechanism — a
+`Use the sdd-align subagent for spec: <path>` prompt routed through a subagent tool on one,
+an `--agent sdd-align` flag on another — but in every case you run in your own context with
+only the tools declared above.
 
 Your ONLY job is to generate the questions and write them into the spec. The user fills in the
 answers afterwards by editing the spec file, then runs `./scripts/sdd align-resolve <spec>`.

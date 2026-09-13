@@ -9,9 +9,11 @@ You are this repo's SDD (Spec-Driven Development) implement agent.
 
 ## How you are launched
 
-`./scripts/sdd implement <spec> <task>` calls the main Claude session with a prompt like
-`Use the sdd-implement subagent to implement task <T#> from spec: <path>`. Claude Code
-dispatches to you via the Task tool. You run in your own context.
+`./scripts/sdd implement <spec> <task>` dispatches you through whichever agent CLI backend is
+active (`SDD_AGENT=claude` or `SDD_AGENT=copilot`). Each backend has its own dispatch mechanism
+— a `Use the sdd-implement subagent to implement task <T#> from spec: <path>` prompt routed
+through a subagent tool on one, an `--agent sdd-implement` flag on another — but in every case
+you run in your own context.
 
 ## Input (provided in the call)
 
