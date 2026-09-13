@@ -406,9 +406,15 @@ cmd_verify() {
   # in .claude/agents/sdd-verify.md and is invoked as a subagent (frontmatter
   # tools: Read/Grep/Glob → truly read-only). --permission-mode dontAsk denies
   # anything outside the whitelist without prompting, so the run stays headless.
-  # We parse the machine-readable verdict from the subagent's output.
+  # We parse the machine-readable verdict from the subagent's output. `claude -p` returns
+  # the WRAPPER session's reply, not the subagent's raw output, and the wrapper tends to
+  # summarise — dropping the verdict line and leaving us "inconclusive" on a genuine PASS.
+  # So the prompt explicitly requires the verdict to be relayed verbatim as the first line.
   local tmp; tmp="$(mktemp)"
-  ( cd "$ROOT" && claude -p "Use the sdd-verify subagent for spec: $spec" \
+  ( cd "$ROOT" && claude -p "Use the sdd-verify subagent for spec: $spec
+Then relay the subagent's verdict line verbatim as YOUR first line of output: either
+'VERIFY: PASS' or 'VERIFY: FAIL', with nothing before it — not a preamble, not a heading.
+Put your summary after that line. This line is parsed by a script; omitting it fails the run." \
     --model "$SDD_MODEL_VERIFY" \
     --permission-mode dontAsk \
     --allowedTools "Task,Read,Grep,Glob" ) 2>&1 | tee "$tmp" || true
