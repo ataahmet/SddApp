@@ -143,16 +143,18 @@ reports what the installed CLI actually accepts.
 
 ## 6. Task List
 
-- [ ] T1 – Extract a `run_agent <agent> <mode> <model-role> <prompt>` seam in `scripts/sdd` and route `cmd_align`, `run_task`, `cmd_verify`, `cmd_fix_ktlint` through it, with the Claude driver inline. No behaviour change.
-- [ ] T2 – Move the Claude driver to `scripts/lib/driver-claude.sh`; add `SDD_AGENT` (`claude|copilot|auto`) resolution and neutral "CLI not found" messaging.
-- [ ] T3 – Add `scripts/lib/driver-copilot.sh`: `--agent`, `-p`, `-s`, `--allow-tool`/`--deny-tool` per mode, `--model` per role.
-- [ ] T4 – Replace `SDD_MODEL_*` literals with per-driver role→model tables (§3) keeping the existing env-var names as overrides.
-- [ ] T5 – Add `sdd sync-agents`: translate `.claude/agents/*.md` frontmatter and emit `.github/agents/*.agent.md` with a generated-file banner, **dropping `model:` and `color:`** (D2) so the driver's `--model` stays authoritative; commit the output.
-- [ ] T6 – Rewrite the "How you are launched" sections of the four agent bodies in tool-neutral wording, then re-run `sdd sync-agents`.
-- [ ] T7 – Add `.github/copilot-instructions.md` pointing at `CLAUDE.md` (`@CLAUDE.md`) plus the SDD "read the spec before writing code" rule.
-- [ ] T8 – Add `scripts/lib/deny-list.txt` as the single deny source; generate the `deny` array of `.claude/settings.json` from it (leaving `allow`/`ask` hand-maintained), and have the Copilot driver expand literal paths into `--deny-tool` and glob entries into `--add-dir` path narrowing (D3).
-- [ ] T9 – Add `sdd doctor`: resolved backend, CLI version, accepted models, a flag-support pre-flight probe (D5), per-entry deny coverage (D3), a `model:`-absence assertion on generated agents (D2), and `.github/agents/` drift detection.
-- [ ] T10 – Update `README.md`: Copilot CLI setup, `SDD_AGENT` usage, the driver/model tables, and drop the stale "Copilot kullanıyorsan kendin çevir" note.
+- [ ] T1 – Extract a `run_agent <agent> <mode> <model-role> <prompt>` seam in `scripts/sdd` and route `cmd_align`, `run_task`, `cmd_verify`, `cmd_fix_ktlint` through it, with the Claude driver inline. Pure extraction: today's prompts, exit codes and front-matter writes are all preserved verbatim — the two §5 changes are deliberately deferred to T3 and T4, so this task alone changes no behaviour.
+- [ ] T2 – Move the Claude driver to `scripts/lib/driver-claude.sh`; add `SDD_AGENT` (`claude|copilot|auto`) resolution (binary presence only, no runtime fallback — D6) and neutral "CLI not found" messaging.
+- [ ] T3 – **Breaking change 1 of §5 (D6):** unify the missing-CLI exit path. `cmd_align`'s CLI-not-found branch currently prints the manual protocol and falls through to exit 0; move that text into the shared `run_agent` error path so all four agent-backed commands print it and exit 1.
+- [ ] T4 – **Breaking change 2 of §5 (D5):** split infrastructure failure from an inconclusive verdict in `cmd_verify`. Today the `verify: failed` write happens whenever no `VERIFY:` line is found, including when the CLI never ran. Have `run_agent` report *why* it failed; write `verify: failed` only for a completed run with unparseable output, and on infrastructure failure leave the front matter untouched and exit non-zero.
+- [ ] T5 – Add `scripts/lib/driver-copilot.sh`: `--agent`, `-p`, `-s`, `--allow-tool`/`--deny-tool` per mode, `--model` per role; `implement` mode uses the explicit allow list from D4, never `--allow-all-tools`.
+- [ ] T6 – Replace `SDD_MODEL_*` literals with per-driver role→model tables (§3), keeping the existing env-var names as overrides.
+- [ ] T7 – Add `sdd sync-agents`: translate `.claude/agents/*.md` frontmatter and emit `.github/agents/*.agent.md` with a generated-file banner. `model:` is dropped so the driver's `--model` stays authoritative (D2); `color:` is dropped too, simply because Copilot's agent schema has no such field.
+- [ ] T8 – Rewrite the "How you are launched" sections of the four agent bodies in tool-neutral wording, then re-run `sdd sync-agents`.
+- [ ] T9 – Add `.github/copilot-instructions.md` pointing at `CLAUDE.md` (`@CLAUDE.md`) plus the SDD "read the spec before writing code" rule.
+- [ ] T10 – Add `scripts/lib/deny-list.txt` as the single deny source; generate the `deny` array of `.claude/settings.json` from it (leaving `allow`/`ask` hand-maintained), and have the Copilot driver expand literal paths into `--deny-tool` and glob entries into `--add-dir` path narrowing (D3).
+- [ ] T11 – Add `sdd doctor`: resolved backend, CLI version, accepted models, a flag-support pre-flight probe (D5), per-entry deny coverage (D3), a `model:`-absence assertion on generated agents (D2), and `.github/agents/` drift detection.
+- [ ] T12 – Update `README.md`: Copilot CLI setup, `SDD_AGENT` usage, the driver/model tables, the two §5 breaking changes, and drop the stale "Copilot kullanıyorsan kendin çevir" note.
 
 ## 7. Acceptance Criteria
 
@@ -179,6 +181,10 @@ reports what the installed CLI actually accepts.
       non-zero if any entry is covered by neither (D3).
 - [ ] The `deny` array of `.claude/settings.json` matches `scripts/lib/deny-list.txt`, and its
       `allow`/`ask` arrays are unchanged by this refactor (D3).
+- [ ] `.github/copilot-instructions.md` exists, resolves `CLAUDE.md` through an `@CLAUDE.md`
+      reference rather than restating any rule, and states the spec-first rule (T9).
+- [ ] `README.md` documents Copilot CLI setup, `SDD_AGENT`, the model table and both §5
+      breaking changes, and no longer tells the reader to convert the `claude` calls by hand (T12).
 - [ ] `./gradlew checkCodeQuality assembleDevDebug` is green (no app code is touched, so this
       only guards against accidental damage).
 - [ ] No file under `app/`, `specs/templates/` or the CLAUDE.md §9.1 lifecycle is modified.
@@ -217,11 +223,13 @@ throwaway copy, so its front matter can be reset between runs).
      Format (parsed by the script):
      1. **Question:** <question>
         - **Answer:** <answer>
-     LABELLING: the numbered questions below are cited elsewhere in this spec as D1–D8, matching
-     their position in this list. The three decisions settled with the user *before* align ran
-     are labelled P1 (model mapping), P2 (CLI only) and P3 (`.claude/agents/` stays the source);
-     they are recorded in §3 / Scope and are not repeated here. P-labels and D-labels are
-     separate sequences — do not renumber one into the other. -->
+     LABELLING: where a task or criterion elsewhere in this spec cites a decision as D<n>, the
+     <n> is this list's numbering. Not every question is cited by label; D1 (Copilot access) and
+     D8 (string language) are preconditions rather than design constraints, so they are honoured
+     without a label. The three decisions settled with the user *before* align ran are labelled
+     P1 (model mapping), P2 (CLI only) and P3 (`.claude/agents/` stays the source); they are
+     recorded in §3 / Scope and are not repeated here. P-labels and D-labels are separate
+     sequences — do not renumber one into the other. -->
 
 1. **Question:** Is the GitHub Copilot CLI actually installed and authenticated on the machine where this spec will be implemented? The §7 acceptance criteria and §8 test plan require live `SDD_AGENT=copilot` runs of `align`, `verify` and `implement`; if no Copilot access exists, do we (a) postpone to `blocked`, (b) ship the driver with only the Claude-regression criteria executed and mark the Copilot criteria as untested, or (c) something else?
    - **Answer:** A Copilot subscription exists, so neither (a) nor (b) applies: the CLI is installed (`npm i -g @github/copilot`) as a prerequisite of T3 and every `SDD_AGENT=copilot` acceptance criterion in §7 and test in §8 is executed live. Installing and authenticating the CLI is a precondition of starting T3, not a task in its own right; if installation turns out to be impossible the spec goes to `blocked` rather than shipping untested criteria.
@@ -264,3 +272,4 @@ throwaway copy, so its front matter can be reset between runs).
 | 2026-09-13 | ready | Mandatory sections filled |
 | 2026-09-13 | ready | `sdd align` raised 8 decisions; all answered. §3/§5/§6/§7/§8 updated to match — two breaking changes now declared in §5 (D5, D6) |
 | 2026-09-13 | ready | verify FAIL: D2/D3 labels collided with the pre-align decisions. Pre-align set relabelled P1–P3; §10 extended with the flavour and Test-Plan-section justifications |
+| 2026-09-13 | ready | verify FAIL: §5 declared two breaking changes that no task implemented. §6 rewritten to 12 tasks — D6 and D5 are now T3 and T4 — plus acceptance criteria for T9/T12 and a corrected §9 labelling note |
