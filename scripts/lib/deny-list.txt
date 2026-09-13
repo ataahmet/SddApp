@@ -1,0 +1,22 @@
+# Single source for secret-file / destructive-command denies (D3, spec 002).
+# One entry per line, in a backend-neutral form; comments ('#') and blank
+# lines are ignored. Consumers:
+#   - `sdd sync-agents` (scripts/sdd) generates the "deny" array of
+#     .claude/settings.json from this file (T10). The "allow"/"ask" arrays in
+#     that file stay hand-maintained and are never touched by the generator.
+#   - scripts/lib/driver-copilot.sh (T5) expands this same file into
+#     `--deny-tool` flags for entries it can express, and `--add-dir` path
+#     narrowing for glob entries Copilot's `--deny-tool` cannot state.
+#   - `sdd doctor` (T11) reports, per entry, which of the two mechanisms
+#     above covers it on the Copilot backend.
+#
+# Entry shape (parsed by generators, not by this file itself):
+#   - one word, no '*'      → a literal path deny, e.g. "local.properties"
+#   - one word, containing '*' → a glob path deny, e.g. "*.jks"
+#   - multiple words        → a shell command deny, e.g. "git push --force"
+secrets.properties
+local.properties
+.env
+*.jks
+*.keystore
+git push --force

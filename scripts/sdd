@@ -385,6 +385,8 @@ run_task() { # <spec> <task>
 
 AGENTS_SRC_DIR="$ROOT/.claude/agents"
 AGENTS_DST_DIR="$ROOT/.github/agents"
+DENY_LIST_FILE="$ROOT/scripts/lib/deny-list.txt"
+CLAUDE_SETTINGS_FILE="$ROOT/.claude/settings.json"
 
 # Reads a frontmatter field, scoped to the first '---'...'---' block only
 # (unlike fm_get, which is not frontmatter-scoped and could match a body line).
@@ -482,6 +484,78 @@ cmd_sync_agents() {
   done
   [ "$had_files" -eq 1 ] || { echo "No agent files found in $AGENTS_SRC_DIR"; exit 1; }
   echo "✓ .github/agents/ regenerated."
+
+  sync_claude_settings_deny || exit 1
+}
+
+###############################################################################
+# Deny-list sync: scripts/lib/deny-list.txt → .claude/settings.json "deny" (T10)
+###############################################################################
+# scripts/lib/deny-list.txt is the single, backend-neutral deny source (D3).
+# This regenerates only the "deny" array of .claude/settings.json from it;
+# "allow"/"ask" in that file are hand-maintained and are never touched here.
+# The Copilot-side expansion of the same file (--deny-tool / --add-dir) is
+# T5's driver, not this generator.
+
+# Translates one backend-neutral deny-list.txt entry into the Claude
+# permission-string syntax used in .claude/settings.json's "deny" array.
+deny_entry_to_claude() { # <entry>
+  local entry="$1"
+  case "$entry" in
+    *" "*) printf 'Bash(%s *)' "$entry" ;;      # multi-word → shell command
+    *"*"*) printf 'Read(**/%s)' "$entry" ;;     # glob → path narrowed anywhere
+    *)     printf 'Read(./%s)' "$entry" ;;      # literal → repo-root path
+  esac
+}
+
+# Regenerates the "deny": [ ... ] array in .claude/settings.json from
+# scripts/lib/deny-list.txt, leaving every other line of the file untouched.
+sync_claude_settings_deny() {
+  [ -f "$DENY_LIST_FILE" ] || { echo "sdd sync-agents: $DENY_LIST_FILE not found" >&2; return 1; }
+  [ -f "$CLAUDE_SETTINGS_FILE" ] || { echo "sdd sync-agents: $CLAUDE_SETTINGS_FILE not found" >&2; return 1; }
+
+  local line entry entries=()
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="$(echo "$line" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
+    [ -z "$line" ] && continue
+    case "$line" in "#"*) continue ;; esac
+    entry="$(deny_entry_to_claude "$line")"
+    entries+=("$entry")
+  done < "$DENY_LIST_FILE"
+
+  [ "${#entries[@]}" -gt 0 ] || { echo "sdd sync-agents: $DENY_LIST_FILE has no entries" >&2; return 1; }
+
+  # Rewritten with plain bash (no awk -v with an embedded-newline string —
+  # the macOS-shipped one-true-awk mangles that), so only the "deny": [ ... ]
+  # block is replaced and every other line, including "allow"/"ask", is
+  # copied through verbatim.
+  local tmp raw_line in_deny=0 i last
+  tmp="$(mktemp)"
+  last=$(( ${#entries[@]} - 1 ))
+  while IFS= read -r raw_line || [ -n "$raw_line" ]; do
+    if [ "$in_deny" -eq 0 ] && [[ "$raw_line" =~ ^[[:space:]]*\"deny\":[[:space:]]*\[ ]]; then
+      printf '%s\n' "$raw_line" >> "$tmp"
+      for i in "${!entries[@]}"; do
+        if [ "$i" -lt "$last" ]; then
+          printf '      "%s",\n' "${entries[$i]}" >> "$tmp"
+        else
+          printf '      "%s"\n' "${entries[$i]}" >> "$tmp"
+        fi
+      done
+      in_deny=1
+      continue
+    fi
+    if [ "$in_deny" -eq 1 ]; then
+      if [[ "$raw_line" =~ ^[[:space:]]*\] ]]; then
+        printf '%s\n' "$raw_line" >> "$tmp"
+        in_deny=0
+      fi
+      continue
+    fi
+    printf '%s\n' "$raw_line" >> "$tmp"
+  done < "$CLAUDE_SETTINGS_FILE"
+  mv "$tmp" "$CLAUDE_SETTINGS_FILE"
+  echo "✓ .claude/settings.json 'deny' array regenerated from ${DENY_LIST_FILE#$ROOT/}."
 }
 
 ###############################################################################
@@ -827,7 +901,7 @@ Usage:
   sdd verify <spec.md>                               Mandatory gate: check spec vs CLAUDE.md → verify: passed/failed
   sdd implement <spec.md> [Task]                     Implement a task; omit Task to implement all in order (active+branch, alignment: resolved required)
   sdd fix-ktlint [gradle-task]                       Fix ktlint violations with agent (default: app:ktlint)
-  sdd sync-agents                                    Regenerate .github/agents/*.agent.md from .claude/agents/*.md
+  sdd sync-agents                                    Regenerate .github/agents/*.agent.md from .claude/agents/*.md, and .claude/settings.json's "deny" array from scripts/lib/deny-list.txt
   sdd done   <spec.md>                               Quality gates + status: done
   sdd block  <spec.md> "<reason>"                    status: blocked
   sdd drop   <spec.md> "<reason>"                    status: dropped
