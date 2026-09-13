@@ -188,9 +188,8 @@ require_verify_passed() {
   return 0
 }
 
-# Lists task IDs (T1, T2, ...) from the spec's Task List section in order.
 list_tasks() { # <spec>
-  grep -oE '"[[:space:]]*-[[:space:]]*\[[ xX]\][[:space:]]*T[0-9]+' "$1" | grep -oE 'T[0-9]+'
+  grep -oE '^[[:space:]]*-[[:space:]]*\[[ xX]?\][[:space:]]*T[0-9]+' "$1" | grep -oE 'T[0-9]+'
 }
 
 # Implements a single task with the sdd-implement agent + prints a commit hint.

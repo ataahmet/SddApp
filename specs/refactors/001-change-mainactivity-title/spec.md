@@ -38,11 +38,11 @@ dropped_reason: ~
 - [ ] Yes:
 
 ## 6. Task List
-- [ ] T1 - Add title value from `res/values/strings.xml`
-- [ ] T2 – Use this title in MainActivity toolbar
+- [x] T1 - Add title value from `res/values/strings.xml`
+- [x] T2 – Use this title in MainActivity toolbar
 
 ## 7. Acceptance Criteria
-- [ ] Correct MainActivity toolbar title
+- [x] Correct MainActivity toolbar title
 - [ ] Success `/gradlew checkCodeQuality assembleDevDebug`
 
 ## 8. Open Decisions (Alignment)
@@ -74,3 +74,6 @@ dropped_reason: ~
 | Date | Status | Change |
 |------|--------|--------|
 | YYYY-MM-DD | draft | Refactor planned |
+| 2026-09-13 | active | T1: added `main_toolbar_title` string resource ("SDD DEMO") to `res/values/strings.xml` |
+| 2026-09-13 | active | T2: verified MainActivity already renders `main_toolbar_title` via Material3 `TopAppBar` in `Scaffold(topBar = ...)`; no code change needed |
+| 2026-09-13 | active | T2 re-verify: confirmed `MainActivity.kt`/`strings.xml` unchanged and correct; `checkCodeQuality` task and `assembleDevDebug` variant do not exist in this project (no lint/quality task wired up, no `dev` product flavor defined), and `./gradlew assembleDebug` fails on a pre-existing, unrelated AGP 8.11.2 vs. `androidx.core:core-ktx:1.19.0` compileSdk/AGP version mismatch — not caused by this change. Acceptance criterion left unchecked since the build did not genuinely pass. |
