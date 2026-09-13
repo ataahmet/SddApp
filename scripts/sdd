@@ -192,6 +192,49 @@ list_tasks() { # <spec>
   grep -oE '^[[:space:]]*-[[:space:]]*\[[ xX]?\][[:space:]]*T[0-9]+' "$1" | grep -oE 'T[0-9]+'
 }
 
+###############################################################################
+# Agent driver (Claude Code, inline for now — see specs/refactors/002-*/spec.md)
+###############################################################################
+
+# Single seam every agent-backed command dispatches through. Today this only
+# knows the Claude Code CLI; the <agent> name is unused by this driver (Claude
+# dispatch happens by naming the subagent inside <prompt>) but is threaded
+# through so a future driver (e.g. Copilot CLI's `--agent`) can use it without
+# changing call sites.
+#
+# Usage: run_agent <agent> <mode> <model> <prompt>
+#   <mode>: edit      → --permission-mode acceptEdits
+#           full      → --permission-mode bypassPermissions
+#           readonly  → --permission-mode dontAsk --allowedTools "Task,Read,Grep,Glob"
+#             (also tees combined stdout/stderr into $RUN_AGENT_OUTPUT for
+#              verdict parsing by the caller, e.g. cmd_verify)
+run_agent() {
+  local agent="$1" mode="$2" model="$3" prompt="$4"
+  case "$mode" in
+    edit)
+      ( cd "$ROOT" && claude -p "$prompt" \
+        --model "$model" \
+        --permission-mode acceptEdits ) || true
+      ;;
+    full)
+      ( cd "$ROOT" && claude -p "$prompt" \
+        --model "$model" \
+        --permission-mode bypassPermissions ) || true
+      ;;
+    readonly)
+      RUN_AGENT_OUTPUT="$(mktemp)"
+      ( cd "$ROOT" && claude -p "$prompt" \
+        --model "$model" \
+        --permission-mode dontAsk \
+        --allowedTools "Task,Read,Grep,Glob" ) 2>&1 | tee "$RUN_AGENT_OUTPUT" || true
+      ;;
+    *)
+      echo "run_agent: unknown mode '$mode'" >&2
+      return 1
+      ;;
+  esac
+}
+
 # Implements a single task with the sdd-implement agent + prints a commit hint.
 run_task() { # <spec> <task>
   local spec="$1" task="$2" code id
@@ -201,9 +244,8 @@ run_task() { # <spec> <task>
   # prompt. Claude Code's Task tool dispatches to the subagent, which runs in its
   # own context with its own tools (as declared in the agent's frontmatter).
   # Headless (`-p`) + bypassPermissions keeps the run non-interactive; no TUI.
-  ( cd "$ROOT" && claude -p "Use the sdd-implement subagent to implement task $task from spec: $spec" \
-    --model "$SDD_MODEL_IMPLEMENT" \
-    --permission-mode bypassPermissions ) || true
+  run_agent "sdd-implement" "full" "$SDD_MODEL_IMPLEMENT" \
+    "Use the sdd-implement subagent to implement task $task from spec: $spec"
   code="$(type_code "$(fm_get "$spec" type)")"
   id="$(fm_get "$spec" task_id)"
   echo "Review changes → ./gradlew checkCodeQuality → commit:"
@@ -269,9 +311,8 @@ cmd_align() {
     # prompt so Claude Code dispatches to it via its Task tool. Headless (`-p`)
     # keeps the run non-interactive: the subagent writes questions into the spec
     # and exits — no TUI, no chat.
-    ( cd "$ROOT" && claude -p "Use the sdd-align subagent for spec: $spec" \
-      --model "$SDD_MODEL_ALIGN" \
-      --permission-mode acceptEdits ) || true
+    run_agent "sdd-align" "edit" "$SDD_MODEL_ALIGN" \
+      "Use the sdd-align subagent for spec: $spec"
     echo
     echo "✓ Alignment questions written. Status:"
     grep -E '^alignment:' "$spec" || true
@@ -410,14 +451,12 @@ cmd_verify() {
   # the WRAPPER session's reply, not the subagent's raw output, and the wrapper tends to
   # summarise — dropping the verdict line and leaving us "inconclusive" on a genuine PASS.
   # So the prompt explicitly requires the verdict to be relayed verbatim as the first line.
-  local tmp; tmp="$(mktemp)"
-  ( cd "$ROOT" && claude -p "Use the sdd-verify subagent for spec: $spec
+  run_agent "sdd-verify" "readonly" "$SDD_MODEL_VERIFY" \
+    "Use the sdd-verify subagent for spec: $spec
 Then relay the subagent's verdict line verbatim as YOUR first line of output: either
 'VERIFY: PASS' or 'VERIFY: FAIL', with nothing before it — not a preamble, not a heading.
-Put your summary after that line. This line is parsed by a script; omitting it fails the run." \
-    --model "$SDD_MODEL_VERIFY" \
-    --permission-mode dontAsk \
-    --allowedTools "Task,Read,Grep,Glob" ) 2>&1 | tee "$tmp" || true
+Put your summary after that line. This line is parsed by a script; omitting it fails the run."
+  local tmp="$RUN_AGENT_OUTPUT"
 
   local verdict=""
   if grep -qE 'VERIFY:[[:space:]]*PASS' "$tmp"; then
@@ -487,15 +526,14 @@ cmd_fix_ktlint() {
   echo "→ Sending files with violations to the kotlin-ktlint agent:"
   echo "$files" | tr ',' '\n' | sed 's/^/  · /'
 
-  ( cd "$ROOT" && claude -p "Use the kotlin-ktlint subagent to fix the following violations.
+  run_agent "kotlin-ktlint" "edit" "$SDD_MODEL_KTLINT" \
+    "Use the kotlin-ktlint subagent to fix the following violations.
 
 ## Files to modify
 $files
 
 ## Current ktlint violations
-$(cat "$tmp")" \
-    --model "$SDD_MODEL_KTLINT" \
-    --permission-mode acceptEdits ) || true
+$(cat "$tmp")"
 
   rm -f "$tmp"
   echo "→ Verify again: ./gradlew $gradle_task"

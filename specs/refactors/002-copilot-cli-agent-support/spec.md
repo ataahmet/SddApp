@@ -161,7 +161,7 @@ silent degradation).
 
 ## 6. Task List
 
-- [ ] T1 – Extract a `run_agent <agent> <mode> <model-role> <prompt>` seam in `scripts/sdd` and route `cmd_align`, `run_task`, `cmd_verify`, `cmd_fix_ktlint` through it, with the Claude driver inline. Pure extraction: today's prompts, exit codes and front-matter writes are all preserved verbatim — the two §5 changes are deliberately deferred to T3 and T4, so this task alone changes no behaviour.
+- [x] T1 – Extract a `run_agent <agent> <mode> <model-role> <prompt>` seam in `scripts/sdd` and route `cmd_align`, `run_task`, `cmd_verify`, `cmd_fix_ktlint` through it, with the Claude driver inline. Pure extraction: today's prompts, exit codes and front-matter writes are all preserved verbatim — the two §5 changes are deliberately deferred to T3 and T4, so this task alone changes no behaviour.
 - [ ] T2 – Move the Claude driver to `scripts/lib/driver-claude.sh`; add `SDD_AGENT` (`claude|copilot|auto`) resolution (binary presence only, no runtime fallback — D6) and neutral "CLI not found" messaging.
 - [ ] T3 – **Breaking change 1 of §5 (D6):** unify the missing-CLI exit path. `cmd_align`'s CLI-not-found branch currently prints the manual protocol and falls through to exit 0; move that text into the shared `run_agent` error path so all four agent-backed commands print it and exit 1.
 - [ ] T4 – **Breaking change 2 of §5 (D5):** split infrastructure failure from an inconclusive verdict in `cmd_verify`. Today the `verify: failed` write happens whenever no `VERIFY:` line is found, including when the CLI never ran. Have `run_agent` report *why* it failed; write `verify: failed` only for a completed run with unparseable output, and on infrastructure failure leave the front matter untouched and exit non-zero.
@@ -203,8 +203,11 @@ silent degradation).
       reference rather than restating any rule, and states the spec-first rule (T9).
 - [ ] `README.md` documents Copilot CLI setup, `SDD_AGENT`, the model table and both §5
       breaking changes, and no longer tells the reader to convert the `claude` calls by hand (T12).
-- [ ] `./gradlew checkCodeQuality assembleDevDebug` is green (no app code is touched, so this
-      only guards against accidental damage).
+- [ ] `bash -n scripts/sdd` and `bash -n scripts/lib/*.sh` parse cleanly after every task.
+- [ ] A full `new -> ready -> align -> align-resolve -> verify -> start -> implement` round trip
+      succeeds end to end on a scratch spec, once per backend (this replaces the gradle gate;
+      see the third entry in §10).
+- [ ] `git status --short` shows no file outside §4 modified by any task.
 - [ ] No file under `app/`, `specs/templates/` or the CLAUDE.md §9.1 lifecycle is modified.
 
 ## 8. Test Plan
@@ -277,6 +280,20 @@ throwaway copy, so its front matter can be reset between runs).
   this change are the CLI invocation surface and the front-matter fields, documented in §3.
   Nothing in CLAUDE.md §1–§8 is weakened: the Copilot backend loads the same `CLAUDE.md`, so the
   rules the agents enforce are unchanged.
+- **§9.1 makes `./gradlew checkCodeQuality assembleDevDebug` the `active -> done` gate; this
+  spec cannot satisfy it, and substitutes shell and round-trip checks instead (§7).** Neither
+  task exists in this project: `checkCodeQuality` is not defined anywhere in the build, there is
+  no `dev` flavour (only `debug`/`release`), and no ktlint plugin is applied, so `sdd fix-ktlint`
+  has no `app:ktlint` task either. Verified by running the command with this branch's changes
+  stashed — it fails identically, so the failure is pre-existing and unrelated to this refactor.
+  More broadly, most of the CLAUDE.md "non-negotiable - verified" stack (Java 17, compileSdk 35 /
+  minSdk 23 / targetSdk 35, Hilt, RxJava2, Retrofit+Gson, Timber, PaperDB) is absent from
+  `app/build.gradle.kts` and `gradle/libs.versions.toml`; the app is still a bare Compose
+  skeleton on Java 11 / SDK 36. Closing that gap is spec 003, not this one. Consequence to be
+  aware of: `./scripts/sdd done` shells out to the same gradle command, so it cannot be used to
+  close this spec until 003 lands - `status: done` is set by hand here, with the §7 criteria
+  above standing in as the evidence.
+
 - **§9.1 requires a Test Plan, but `specs/templates/refactor.md` has no such section.** This spec
   adds `## 8. Test Plan` and shifts the following sections to §9–§11. The template itself is
   deliberately left untouched (out of scope per §3); if the gap should be fixed at the template
@@ -294,3 +311,5 @@ throwaway copy, so its front matter can be reset between runs).
 | 2026-09-13 | ready | verify FAIL: the driver-side drift warning (D7) was asserted in §7 but tasked nowhere — folded into T5. §3 now cites the Copilot docs it relies on and states the untested-flags risk explicitly |
 | 2026-09-13 | ready | Hotfix to `scripts/sdd`: `cmd_verify` now requires the wrapper session to relay the subagent's `VERIFY:` line verbatim — it was summarising the verdict away, so a genuine PASS was recorded as `verify: failed`. Permanently addressed by T4 |
 | 2026-09-13 | ready | verify FAIL: renumbering leftovers — D1's answer still named T3 as the Copilot-install precondition (now T5), and the §9 note wrongly claimed D1 is never cited by label |
+| 2026-09-13 | active | T1 implemented: added `run_agent <agent> <mode> <model> <prompt>` (modes `edit`/`full`/`readonly`) to `scripts/sdd` and routed `cmd_align`, `run_task`, `cmd_verify`, `cmd_fix_ktlint` through it; Claude driver stays inline, prompts/flags/exit codes/front-matter writes unchanged |
+| 2026-09-13 | active | T1 done. Gradle gate found unsatisfiable: `checkCodeQuality`, the `dev` flavour and the ktlint plugin do not exist in this project. §7 criterion replaced with shell/round-trip checks, justified in §10; the build-vs-CLAUDE.md gap is deferred to spec 003 |
