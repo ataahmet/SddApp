@@ -1,45 +1,46 @@
-# Android SDD Artifact
+# SDD Artifact
 
-Bu repository, Android projelerinde kullanılacak taşınabilir SDD artifact'inin kaynağıdır.
-Mevcut SDD akışını bu repository içinde kullanmak için `scripts/sdd` komutunu çalıştırabilirsin.
+This repository is the source for the portable SDD artifact used in Android projects.
+Run `scripts/sdd` to use the existing SDD workflow in this repository.
 
-## Artifact oluşturma
+## Creating the artifact
 
 ```bash
 ./scripts/sdd-artifact
 ```
 
-Varsayılan çıktı:
+Default output:
 
 ```text
 dist/sdd-artifact/
 ```
 
-Özel çıktı yolu:
+Custom output path:
 
 ```bash
 ./scripts/sdd-artifact /tmp/sdd-artifact
 ```
 
-Artifact paketinin kurulum dokümanı, bu dosyanın artifact içindeki kopyası olan
-`dist/sdd-artifact/README.md` dosyasında bulunur. Bu doküman hedef projeye kurulmaz.
+The artifact package's installation documentation is in `dist/sdd-artifact/README.md`, which is
+the copy of this file inside the artifact. This document is not installed in the target project.
 
-## Başka Android projesine kurma
+## Installing into another Android project
 
 ```bash
 dist/sdd-artifact/install.sh /path/to/target-android-project
 ```
 
-Kurulum hedef projeye `CLAUDE.md`, `SDD-README.md`, `.claude/`, `.github/`, `scripts/` ve
-`specs/templates/` yapısını ekler. Mevcut dosyaların üzerine varsayılan olarak yazmaz.
+The installation adds `CLAUDE.md`, `SDD-README.md`, `.claude/`, `.github/`, `scripts/`, and
+`specs/templates/` to the target project. It does not overwrite existing files by default.
 
-Mevcut SDD dosyalarını bilinçli olarak güncellemek için:
+To intentionally update existing SDD files:
 
 ```bash
 dist/sdd-artifact/install.sh --force /path/to/target-android-project
 ```
 
-Kurulum hedef `.gitignore` dosyasındaki mevcut içeriği korur ve eksik SDD kurallarını ekler:
+The installation preserves the existing contents of the target `.gitignore` and adds missing SDD
+rules:
 
 ```text
 dist
@@ -49,5 +50,5 @@ specs/refactors
 specs/tests
 ```
 
-Kurulum ayrıca hedef projeye `SDD-README.md` dosyasını ekler. Bu dosya hedef projede SDD'nin
-günlük kullanımını anlatır.
+The installation also adds `SDD-README.md` to the target project. This file explains daily SDD
+usage in the target project.

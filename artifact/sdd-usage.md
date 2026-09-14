@@ -1,103 +1,101 @@
-# Android için Specification-Driven Development
+# Specification-Driven Development for Android
 
-Claude Code CLI veya GitHub Copilot CLI ile çalışan, plugin gerektirmeyen, terminal-first bir
-SDD akışı. Hangi CLI'ın kullanılacağını `SDD_AGENT` ortam değişkeni seçer (bkz. "Backend
-Seçimi — SDD_AGENT" altında).
+Claude Code CLI or GitHub Copilot CLI, a plugin-free, terminal-first SDD flow. The `SDD_AGENT`
+environment variable selects which CLI is used (see "Backend Selection — SDD_AGENT" below).
 
-## Kurulum
+## Setup
 
-### 1. Gereksinimler
+### 1. Requirements
 
 ```bash
-# git zaten varsa atla
+# skip if git is already installed
 brew install git                                   # macOS
 
-# Claude Code CLI (align/implement/verify komutları bunu kullanır)
-curl -fsSL https://claude.ai/install.sh | bash     # önerilen (Node gerekmez)
-# alternatifler:
+# Claude Code CLI (used by align/implement/verify commands)
+curl -fsSL https://claude.ai/install.sh | bash     # recommended (does not require Node)
+# alternatives:
 #   brew install --cask claude-code
 #   npm install -g @anthropic-ai/claude-code       # Node 22+ ister
 
-claude --version        # sürüm güncel olmalı
-claude doctor           # kurulum/ayar teşhisi
+claude --version        # should be up to date
+claude doctor           # diagnose installation/configuration
 ```
 
-Bu kit `claude` CLI'ın `--agent`, `--tools` ve `--permission-mode` bayraklarını kullanır;
-Claude Code **v2.1.x** ve üzeri gerekir.
+This kit uses the `claude` CLI's `--agent`, `--tools`, and `--permission-mode` flags;
+Claude Code **v2.1.x** and above is required.
 
-1. Terminal'e `claude` yaz (güncel sürüm önerilir).
+1. Type `claude` in the terminal (the current version is recommended).
 
-2. Giriş: CLI içinde `/login`, ya da doğrudan `claude auth login`.
-   Gün içinde bir kez yapman yeterli; `claude auth status` ile kontrol edebilirsin.
+2. Sign in: `/login` inside the CLI, or direct `claude auth login`.
+   This is enough to do once during the day; you can check with `claude auth status`.
 
-3. Login başarılı olduktan sonra CLI'ı kapatabilir veya arka planda bırakabilirsin.
+3. After login succeeds, you can close the CLI or leave it running in the background.
 
-4. `scripts/sdd` komutlarını çalıştıracağın terminalde yukarıdaki proxy export'larını
-   tekrar yap ve bu oturumu kullan.
+4. In the terminal where you will run the `scripts/sdd` commands, use this session.
 
-*CI/pipeline:* interaktif login yerine `claude setup-token` ile uzun ömürlü token üret.
+*CI/pipeline:* instead of interactive login, generate a long-lived token with `claude setup-token`.
 
-### 2. GitHub Copilot CLI (ikinci backend)
+### 2. GitHub Copilot CLI (second backend)
 
 ```bash
-npm i -g @github/copilot     # Node gerekir
+npm i -g @github/copilot     # requires Node
 copilot --version
-copilot                      # ilk açılışta GitHub hesabınla giriş ister
+copilot                      # prompts for GitHub sign-in on first launch
 ```
 
-Detaylı kurulum/kimlik doğrulama adımları için GitHub'ın resmi dokümanına bak:
+For detailed installation/authentication steps, see GitHub's official documentation:
 <https://docs.github.com/en/copilot/how-tos/copilot-cli>.
 
-**Durum notu:** Bu backend'in seçim mantığı (`SDD_AGENT`, model tabloları, aşağıda) `scripts/sdd`
-içinde uygulanmış durumda, ama asıl Copilot sürücüsü (`scripts/lib/driver-copilot.sh`) henüz
-yazılmadı — spec `002-copilot-cli-agent-support`'un T5 task'ı. Bugün `copilot` kurulu olsa bile
-`SDD_AGENT=copilot` (ya da `claude` yokken `SDD_AGENT=auto`) çalıştırırsan komut front matter'a
-dokunmadan, net bir hatayla ve **exit 1** ile durur:
+**Status note:** The selection logic for this backend (`SDD_AGENT`, model tables, below) is implemented
+in `scripts/sdd`, but the actual Copilot driver (`scripts/lib/driver-copilot.sh`) is not yet
+written — spec `002-copilot-cli-agent-support` T5. Even if `copilot` is installed today, running
+`SDD_AGENT=copilot` (or `SDD_AGENT=auto` when `claude` is missing) will stop with a clear error
+and **exit 1**, without touching the command's front matter:
 
 ```
 SDD_AGENT resolved to 'copilot', but the Copilot CLI driver is not implemented yet
 (scripts/lib/driver-copilot.sh, spec 002 T5). Install 'claude', or set SDD_AGENT=claude.
 ```
 
-Sürücü tamamlanınca bu not kaldırılacak; o zamana kadar `claude` kurulu tutmak gerekir.
+Once the driver is complete, this note will be removed; until then, keep `claude` installed.
 
-### 3. Backend Seçimi — SDD_AGENT
+### 3. Backend Selection — SDD_AGENT
 
-`scripts/sdd`, dört agent çağrısını da (`align`, `implement`, `verify`, `fix-ktlint`) tek bir
-driver seçimi üzerinden yapar; hangi CLI'ın kullanılacağını `SDD_AGENT` ortam değişkeni seçer:
+`scripts/sdd` routes all four agent calls (`align`, `implement`, `verify`, `fix-ktlint`) through a
+single driver choice; the environment variable `SDD_AGENT` selects which CLI is used:
 
-| Değer | Davranış |
+| Value | Behavior |
 |-------|----------|
-| `claude` | Sadece `claude` CLI'ını arar; yoksa hata basıp exit 1 |
-| `copilot` | Sadece `copilot` CLI'ını arar; sürücü henüz yazılmadı (yukarıya bak) |
-| `auto` (**varsayılan**) | Önce `claude`, yoksa `copilot` — sadece ikilinin PATH'te olup olmadığına bakar |
+| `claude` | Looks for only the `claude` CLI; otherwise prints an error and exits 1 |
+| `copilot` | Looks for only the `copilot` CLI; the driver is not implemented yet (see above) |
+| `auto` (**default**) | Checks `claude` first, otherwise `copilot` — only checks whether either is on PATH |
 
-Seçim **yalnızca ikilinin PATH'te bulunmasına** bakar; kimlik doğrulama/kota gibi çalışma zamanı
-arızalarında **başka backend'e otomatik geçiş yapmaz** — hangi modelin spec'i yazdığı
-belirsizleşmesin diye kasıtlı bir tasarım kararı. Hiçbir CLI bulunamazsa dört komut da manuel
-protokolü basıp **exit 1** ile durur (bkz. aşağıdaki "Breaking Changes" notu, `align` dahil).
+The selection checks only whether the binaries are on PATH; it does not automatically switch to
+another backend for runtime authentication/quota issues — this is a deliberate design choice to
+avoid ambiguity over which model wrote the spec. If no CLI is found, all four commands print the
+manual protocol and stop with **exit 1** (see the "Breaking Changes" note below, including `align`).
 
 ```bash
-SDD_AGENT=claude  ./scripts/sdd verify <spec>   # açıkça Claude
-SDD_AGENT=copilot ./scripts/sdd verify <spec>   # açıkça Copilot (sürücü tamamlanınca)
-./scripts/sdd verify <spec>                     # SDD_AGENT=auto (varsayılan)
+SDD_AGENT=claude  ./scripts/sdd verify <spec>   # explicitly use Claude
+SDD_AGENT=copilot ./scripts/sdd verify <spec>   # explicitly use Copilot (once the driver is complete)
+./scripts/sdd verify <spec>                     # SDD_AGENT=auto (default)
 ```
 
-## Klasör Yapısı
+## Folder Structure
 
 ```
-proje-kökü/
-├── CLAUDE.md                      #  proje mimari kuralları (araçtan bağımsız, tek kaynak)
-├── .claude/                       # Claude Code backend'i
-│   ├── settings.json              # proje izinleri; `deny` dizisi deny-list.txt'den ÜRETİLİR
-│   └── agents/                    # agent tanımları — elle düzenlenen TEK KAYNAK
-│       ├── sdd-align.md           # `sdd align` bu agent'ı kullanır
-│       ├── sdd-implement.md       # `sdd implement` bu agent'ı kullanır
-│       ├── sdd-verify.md          # `sdd verify` bu agent'ı kullanır
-│       └── kotlin-ktlint.md       # `sdd fix-ktlint` bu agent'ı kullanır
-├── .github/                       # GitHub Copilot CLI backend'i
-│   ├── copilot-instructions.md    # ince pointer: @CLAUDE.md + spec-first kuralı
-│   └── agents/                    # ÜRETİLEN — elle düzenleme, `sdd sync-agents` çalıştır
+project-root/
+├── CLAUDE.md                      #  project architecture rules (tool-independent, single source)
+├── .claude/                       # Claude Code backend
+│   ├── settings.json              # project permissions; `deny` is GENERATED from deny-list.txt
+│   └── agents/                    # agent definitions — the SINGLE SOURCE edited by hand
+│       ├── sdd-align.md           # used by `sdd align`
+│       ├── sdd-implement.md       # used by `sdd implement`
+│       ├── sdd-verify.md           # used by `sdd verify`
+│       └── kotlin-ktlint.md       # used by `sdd fix-ktlint`
+├── .github/                       # GitHub Copilot CLI backend
+│   ├── copilot-instructions.md    # thin pointer: @CLAUDE.md + spec-first rule
+│   └── agents/                    # GENERATED — do not edit; run `sdd sync-agents`
 │       ├── sdd-align.agent.md
 │       ├── sdd-implement.agent.md
 │       ├── sdd-verify.agent.md
@@ -105,9 +103,9 @@ proje-kökü/
 ├── scripts/
 │   ├── sdd                        # ana CLI script (chmod +x)
 │   └── lib/
-│       ├── driver-claude.sh       # Claude Code backend sürücüsü
-│       ├── driver-copilot.sh      # Copilot CLI backend sürücüsü (T5 — henüz yok)
-│       └── deny-list.txt          # gizli dosya/komut deny'lerinin tek kaynağı
+│       ├── driver-claude.sh       # Claude Code backend driver
+│       ├── driver-copilot.sh      # Copilot CLI backend driver (T5 — not implemented yet)
+│       └── deny-list.txt          # single source for secret-file/command denies
 └── specs/
     ├── templates/
     │   ├── feature.md
@@ -122,283 +120,284 @@ proje-kökü/
     └── refactors/
 ```
 
-Kurulumdan sonra bir kez: `chmod +x scripts/sdd`.
+After setup, run once: `chmod +x scripts/sdd`.
 
-## Komutlar
+## Commands
 
-> **Akış sırası:** `new → ready → align → align-resolve → verify → start → implement → done`
+> **Flow order:** `new → ready → align → align-resolve → verify → start → implement → done`
 
-İlk iş: `./scripts/sdd doctor` — CLI, oturum, agent dosyaları ve proxy kontrolü.
+First task: `./scripts/sdd doctor` — CLI, session, agent files
 
-### Yeni Spec Oluştur
+### Create a New Spec
 
 ```bash
-./scripts/sdd new feature "Kullanıcı Girişi"
-./scripts/sdd new bug "Token refresh sonsuz döngü"
-./scripts/sdd new test "LoginViewModel coverage"
-./scripts/sdd new refactor "Repository'leri Flow'a geçir"
+./scripts/sdd new feature "User Dashboard"
+./scripts/sdd new bug "Looping Token Refresh"
+./scripts/sdd new test "Login Module Coverage"
+./scripts/sdd new refactor "Convert Repository to Flow"
 ```
 
-Bu komut:
-1. `specs/{type}s/{task_id}-{task_name}/spec.md` oluşturur — **`task_id`'yi sana sorar**
-   (Enter'a basınca sıradaki numarayı varsayılan kullanır)
-2. Şablonu kopyalar, front matter'ı doldurur (`status: draft`)
-3. **Branch oluşturmaz** — branch `sdd start` adımında açılır
+This command:
+1. Creates `specs/{type}s/{task_id}-{task_name}/spec.md` — **it asks you for the `task_id`**
+   (press Enter to use the next number by default)
+2. Copies the template and fills in the front matter (`status: draft`)
+3. **Does not create a branch** — the branch is created in the `sdd start` step
 
-Türkçe başlıklar doğru slug'a çevrilir: "Kullanıcı Girişi" → `kullanici-girisi`.
-
-### Hazır Kapısı — draft → ready
+### Ready Gate — draft → ready
 
 ```bash
 ./scripts/sdd ready specs/features/{task_id}-{task_name}/spec.md
 ```
 
-Şu bölümleri kontrol eder, boşsa geçişi durdurur:
-1. **§1 Amaç / Problem / Motivasyon**
-2. **Kabul Kriterleri** — en az bir madde
-3. **Test Planı** — (bölüm varsa)
+This checks the following sections and stops the transition if they are empty:
+1. **§1 Goal / Problem / Motivation**
+2. **Acceptance Criteria** — at least one item
+3. **Test Plan** — (if the section exists)
 
-Yorum (`<!-- … -->`), boş madde (`-`), boş checkbox (`- [ ]`) ve `{placeholder}` "dolu"
-sayılmaz. `start` yalnız `ready` spec'te çalışır.
+Comments (`<!-- … -->`), empty bullets (`-`), empty checkboxes (`- [ ]`), and `{placeholder}` are
+not considered "filled". `start` only works on a `ready` spec.
 
-### Alignment — Sorular + Cevaplar
+### Alignment — Questions + Answers
 
 ```bash
 ./scripts/sdd align specs/features/{task_id}-{task_name}/spec.md
 ```
 
-Bu komut iki aşamada çalışır, **chat ekranı açmaz**:
+This command runs in two stages, **without opening a chat window**:
 
-1. **Adım 1 — Soru üretimi (headless):** `sdd-align` agent'ı `claude -p` ile çalışır, spec'i
-   ve CLAUDE.md kurallarını okuyarak açık kararları/soruları üretir ve spec'in
-   `## Open Decisions (Alignment)` bölümüne yazar.
+1. **Step 1 — Question generation (headless):** the `sdd-align` agent runs with `claude -p`,
+   reads the spec and CLAUDE.md rules, generates open decisions/questions, and writes them to the
+   spec's `## Open Decisions (Alignment)` section.
 
-2. **Adım 2 — Cevap toplama (terminal):** Bash script, agent'ın yazdığı soruları sırayla
-   terminale basar ve `read` ile cevabını alır. Cevapları spec'e yazar, sonra
-   `align-resolve` çağırıp `alignment: resolved` yapar.
+2. **Step 2 — Answer collection (terminal):** the Bash script prints the questions written by the
+   agent one by one in the terminal and reads your answers with `read`. It writes the answers to
+   the spec, then calls `align-resolve` and sets `alignment: resolved`.
 
 ```
-→ Alignment (adım 1/2): sorular üretiliyor ...
-  5 soru üretildi.
-→ Alignment (adım 2/2): soruları terminalde cevaplayın (boş = atla)
+→ Alignment (step 1/2): generating questions ...
+  5 questions generated.
+→ Alignment (step 2/2): answer the questions in the terminal (empty = skip)
 ────────────────────────────────────────
-  1. Agent sorusu?
-  →  Cevap: Developer cevabı
-  2. Agent sorusu
-  →  Cevap: Developer cevabı
+  1. Agent question?
+  →  Answer: Developer answer
+  2. Agent question
+  →  Answer: Developer answer
 ────────────────────────────────────────
-✓ Tüm alignment soruları cevaplandı → alignment: resolved (2/2).
+✓ All alignment questions answered → alignment: resolved (2/2).
 ```
 
-Terminal interaktif değilse (CI vb.) script soruları üretir ama cevap sormaz;
-cevapları elle doldurup `./scripts/sdd align-resolve <spec>` çalıştırırsın.
+If the terminal is not interactive (CI, etc.), the script still generates the questions but does
+not ask for answers; fill them in manually and run `./scripts/sdd align-resolve <spec>`.
 
-### Alignment'ı Kapat — align-resolve
+### Close Alignment — align-resolve
 
-Normalde `sdd align` bunu otomatik çağırır. Cevapları elle doldurduysan veya sonradan
-değiştirdiysen:
+Normally, `sdd align` calls this automatically. If you filled in the answers manually or changed
+them later:
 
 ```bash
 ./scripts/sdd align-resolve specs/features/{task_id}-{task_name}/spec.md
 ```
 
-Eksik cevap varsa durur ve **hangi sorunun** boş olduğunu yazar. `alignment: resolved`
-olmadan `start`/`implement` çalışmaz.
+If any answer is missing, it stops and prints **which question** is empty. `start`/`implement` will
+not work until `alignment: resolved` is set.
 
-### Doğrula (zorunlu kapı)
+### Verify (required gate)
 
 ```bash
 ./scripts/sdd verify specs/features/{task_id}-{task_name}/spec.md
 ```
 
-`sdd-verify` agent'ı salt-okunur çalışır (`--tools "Read,Grep,Glob"`), spec'i CLAUDE.md ile
-karşılaştırır ve ilk satırda `VERIFY: PASS` / `VERIFY: FAIL` basar. Script bu verdict'i yakalar
-ve front matter'a `verify: passed` / `verify: failed` yazar.
+The `sdd-verify` agent runs in read-only mode (`--tools "Read,Grep,Glob"`), compares the spec
+against CLAUDE.md, and prints `VERIFY: PASS` / `VERIFY: FAIL` on the first line. The script
+captures this verdict and writes `verify: passed` / `verify: failed` to the front matter.
 
-**`verify: passed` olmadan `start` ve `implement` çalışmaz.** Agent bir çelişki ya da en ufak
-belirsizlik bulursa FAIL verir; ilgili noktaları netleştirip tekrar çalıştır. `sdd align`
-yeniden koşarsa spec değiştiği için `verify` otomatik `pending`'e döner.
+**`verify: passed` is required before `start` and `implement` run.** If the agent finds a
+contradiction or even a minor ambiguity, it returns FAIL; clarify the issue and rerun. If
+`sdd align` runs again, the spec changes and `verify` returns to `pending`.
 
-### Branch Aç (start)
+### Start a Branch (start)
 
 ```bash
 ./scripts/sdd start specs/features/{task_id}-{task_name}/spec.md
 ```
 
 1. `git checkout -b main/{task_id}-{task_name}`
-2. Spec front matter'ında `branch:` alanını doldurur
-3. `status: active` yapar
+2. Fills in the `branch:` field in the spec front matter
+3. Sets `status: active`
 
-> **Not:** `main` adında bir branch varsa git `main/...` ref'ini oluşturamaz. Bu durumda
-> `SDD_BRANCH_PREFIX=feature ./scripts/sdd start …` kullan (veya CLAUDE.md §9.1 kuralını güncelle).
+> **Note:** If a branch named `main` already exists, Git cannot create the `main/...` ref. In that
+> case, use `SDD_BRANCH_PREFIX=feature ./scripts/sdd start …` (or update the CLAUDE.md §9.1 rule).
 
-> **Kapılar:** `alignment: resolved` + `verify: passed` olmadan branch açılmaz.
-> Sıra her zaman `align → verify → start`.
+> **Gates:** `alignment: resolved` + `verify: passed` are required before branch creation.
+> The order is always `align → verify → start`.
 
-### Task Implement Et
+### Implement Tasks
 
 ```bash
 ./scripts/sdd implement specs/features/{task_id}-{task_name}/spec.md T3
 ```
 
-Task verilmezse `## Task List`'teki tüm task'lar sırayla uygulanır.
+If no task is given, all tasks in `## Task List` are applied in sequence.
 
-Varsayılan olarak headless çalışır (`claude -p --agent sdd-implement`). Agent'ı izleyerek
-müdahale etmek istersen:
+By default, it runs headless (`claude -p --agent sdd-implement`). If you want to watch the agent
+and intervene:
 
 ```bash
 SDD_IMPLEMENT_INTERACTIVE=1 ./scripts/sdd implement <spec> T3
 ```
 
-> **Commit formatı (CLAUDE.md §9.1):** `[{KOD}-{task_id}] {task} – kısa açıklama` + gövdede
-> `Spec: specs/{type}s/{task_id}-{task_name}/spec.md`. KOD: feature→`FEAT`, bug→`BUG`,
-> refactor→`REF`, test→`TEST`. `sdd implement` bitişte doğru komutu hazır basar.
-> Commit'i agent atmaz, sen atarsın.
+> **Commit format (CLAUDE.md §9.1):** `[{CODE}-{task_id}] {task} – short description` + in the
+> body: `Spec: specs/{type}s/{task_id}-{task_name}/spec.md`. CODE: feature→`FEAT`, bug→`BUG`,
+> refactor→`REF`, test→`TEST`. `sdd implement` prints the correct command when it finishes.
+> The agent does not create the commit; you do.
 
-### Listele
+### List
 
 ```bash
-./scripts/sdd list              # hepsi (status + alignment + verify kolonlarıyla)
+./scripts/sdd list              # all (with status + alignment + verify columns)
 ./scripts/sdd list feature
 ./scripts/sdd list bug
 ```
 
-### ktlint Düzelt (fix-ktlint)
+### Fix ktlint (fix-ktlint)
 
 ```bash
-./scripts/sdd fix-ktlint                  # varsayılan: ./gradlew app:ktlint
-./scripts/sdd fix-ktlint checkCodeQuality # farklı gradle task ile
+./scripts/sdd fix-ktlint                  # default: ./gradlew app:ktlint
+./scripts/sdd fix-ktlint checkCodeQuality # use a different Gradle task
 ```
 
-1. `./gradlew app:ktlint` çalıştırıp ihlalleri toplar
-2. İhlal içeren `.kt` dosyalarını çıkarır (ihlal yoksa "temiz" der)
-3. Dosya listesi + ihlalleri `kotlin-ktlint` agent'ına gönderir; agent yalnız stil/format
-   düzeltir (Bash tool'u yoktur, iş mantığına dokunmaz, yeni dosya oluşturmaz)
+1. Runs `./gradlew app:ktlint` and collects the violations
+2. Extracts the `.kt` files containing violations (if there are no violations, it prints "clean")
+3. Sends the file list + violations to the `kotlin-ktlint` agent; the agent only fixes style/format
+   (it has no Bash tool, does not touch business logic, and does not create new files)
 
-Lifecycle'ın parçası değildir; her aşamada çağrılabilir.
+It is not part of the lifecycle; it can be called at any stage.
 
-### Durum Geçişleri
+### Status Transitions
 
 ```bash
-./scripts/sdd ready          <spec.md>          # draft → ready (zorunlu bölüm kapısı)
-./scripts/sdd align          <spec.md>          # alignment sorularını üret/sor (interaktif)
-./scripts/sdd align-resolve  <spec.md>          # tüm cevaplar dolu mu? → alignment: resolved
-./scripts/sdd verify         <spec.md>          # zorunlu kapı → verify: passed/failed
+./scripts/sdd ready          <spec.md>          # draft → ready (required section gate)
+./scripts/sdd align          <spec.md>          # generate/ask alignment questions (interactive)
+./scripts/sdd align-resolve  <spec.md>          # all answers filled? → alignment: resolved
+./scripts/sdd verify         <spec.md>          # required gate → verify: passed/failed
 ./scripts/sdd start          <spec.md>          # ready → active (+branch)
-./scripts/sdd done           <spec.md>          # kalite kapıları + active → done
-./scripts/sdd block          <spec.md> "neden"  # → blocked
-./scripts/sdd drop           <spec.md> "neden"  # → dropped
-./scripts/sdd doctor                            # ortam kontrolü
+./scripts/sdd done           <spec.md>          # quality gates + active → done
+./scripts/sdd block          <spec.md> "reason" # → blocked
+./scripts/sdd drop           <spec.md> "reason" # → dropped
+./scripts/sdd doctor                            # environment check
 ```
 
-## Tipik İş Akışı
+## Typical Workflow
 
 ```bash
-# 0. Ortam kontrolü (ilk kurulumdan sonra bir kez)
+# 0. Environment check (once after initial setup)
 ./scripts/sdd doctor
 
-# 1. Yeni feature başlat (status: draft, branch yok)
+# 1. Start a new feature (status: draft, no branch)
 ./scripts/sdd new feature "Biometric Login"
 
-# 2. Spec'i editörde aç, Goal / Scope / Acceptance Criteria'yı doldur
+# 2. Open the spec in an editor and fill in Goal / Scope / Acceptance Criteria
 $EDITOR specs/features/001-biometric-login/spec.md
 
-# 3. Zorunlu bölüm kapısı: draft → ready
+# 3. Required section gate: draft → ready
 ./scripts/sdd ready specs/features/001-biometric-login/spec.md
 
-# 4. Alignment: agent soruları üretir, sana sorar, cevapları yazar ve resolved yapar
+# 4. Alignment: the agent generates questions, asks you, writes the answers, and resolves them
 ./scripts/sdd align specs/features/001-biometric-login/spec.md
 
-# 5. Zorunlu kapı: verify passed olmadan start/implement çalışmaz
+# 5. Required gate: start/implement will not run without verify passed
 ./scripts/sdd verify specs/features/001-biometric-login/spec.md
 
-# 6. Spec'i commit'le
+# 6. Commit the spec
 git add specs/features/001-biometric-login/
 git commit -m "docs(spec): Biometric Login spec"
 
-# 7. Branch aç, kodlamaya geç (status: active)
+# 7. Create a branch and start coding (status: active)
 ./scripts/sdd start specs/features/001-biometric-login/spec.md
 
-# 8. Task'ları sırayla implement et
+# 8. Implement tasks in order
 ./scripts/sdd implement specs/features/001-biometric-login/spec.md T1
 ./gradlew checkCodeQuality
 git add . && git commit -m "[FEAT-001] T1 – ..." -m "Spec: specs/features/001-biometric-login/spec.md"
-# … her task için tekrarla
+# … repeat for each task
 
-# (Opsiyonel) ktlint ihlallerini agent ile düzelt
+# (Optional) fix ktlint violations with the agent
 ./scripts/sdd fix-ktlint
 
-# 9. Bitir: kalite kapıları + status: done
+# 9. Finish: quality gates + status: done
 ./scripts/sdd done specs/features/001-biometric-login/spec.md
 ```
 
-## Özel Agent'lar (.claude/agents/)
+## Special Agents (.claude/agents/)
 
-Claude Code `.claude/agents/*.md` altındaki agent'ları **otomatik tanır**; ama kendiliğinden
-devreye girmezler — `--agent <ad>` ile açıkça seçilirler. `scripts/sdd` bu seçimi senin yerine
-yapar. İnteraktif oturumda `@agent-sdd-verify` ile de çağırabilirsin.
+Claude Code **automatically recognizes** agents under `.claude/agents/*.md`; however, they do not
+activate on their own — they must be explicitly selected with `--agent <name>`. `scripts/sdd`
+makes this selection for you. In an interactive session, you can also invoke them with
+`@agent-sdd-verify`.
 
-`.claude/agents/*.md` tek kaynaktır; `./scripts/sdd sync-agents` bunlardan Copilot'un okuduğu
-`.github/agents/*.agent.md` dosyalarını üretir (frontmatter çevrilir, gövde birebir kopyalanır,
-"GENERATED — do not edit by hand" başlığı eklenir). Üretilen dosyalarda `model:` alanı **bilerek
-yok** — model seçimi her zaman driver'ın `--model` bayrağından gelir, aksi halde agent
-frontmatter'ı `SDD_MODEL_*` override'larını ezerdi.
+`.claude/agents/*.md` is the single source of truth; `./scripts/sdd sync-agents` generates the
+Copilot-readable `.github/agents/*.agent.md` files from them (front matter is translated, the body
+is copied verbatim, and the "GENERATED — do not edit by hand" heading is added). The generated
+files intentionally omit the `model:` field — model selection always comes from the driver's
+`--model` flag; otherwise, the agent front matter would override `SDD_MODEL_*` settings.
 
-| Agent | Kullanan komut | Model — Claude | Model — Copilot | Env override | Tool'lar (Claude) | Görev |
+| Agent | Command using it | Model — Claude | Model — Copilot | Env override | Tools (Claude) | Task |
 |-------|---------------|-----------------|-------------------|---------------|--------------------|-------|
-| `sdd-align` | `sdd align` | `opus` (en güçlü) | `claude-opus-5` | `SDD_MODEL_ALIGN` | Read, Grep, Glob, Edit, Write, AskUserQuestion, Bash | Açık kararları üretir, kullanıcıya sorar, cevapları yazar |
-| `sdd-implement` | `sdd implement` | `sonnet` (orta) | `claude-sonnet-5` | `SDD_MODEL_IMPLEMENT` | Read, Grep, Glob, Edit, Write, Bash | Spec'teki tek task'ı CLAUDE.md kurallarıyla uygular |
-| `sdd-verify` | `sdd verify` | `sonnet` (orta) | `claude-sonnet-5` | `SDD_MODEL_VERIFY` | Read, Grep, Glob | Spec'i CLAUDE.md ile karşılaştırır, salt-okunur denetim |
-| `kotlin-ktlint` | `sdd fix-ktlint` | `haiku` (en ucuz) | `claude-haiku-4.5` | `SDD_MODEL_KTLINT` | Read, Grep, Glob, Edit | ktlint stil/format ihlallerini düzeltir (mekanik) |
+| `sdd-align` | `sdd align` | `opus` (strongest) | `claude-opus-5` | `SDD_MODEL_ALIGN` | Read, Grep, Glob, Edit, Write, AskUserQuestion, Bash | Generates open decisions, asks the user, and writes the answers |
+| `sdd-implement` | `sdd implement` | `sonnet` (mid) | `claude-sonnet-5` | `SDD_MODEL_IMPLEMENT` | Read, Grep, Glob, Edit, Write, Bash | Implements the single task from the spec according to CLAUDE.md rules |
+| `sdd-verify` | `sdd verify` | `sonnet` (mid) | `claude-sonnet-5` | `SDD_MODEL_VERIFY` | Read, Grep, Glob | Compares the spec against CLAUDE.md in a read-only review |
+| `kotlin-ktlint` | `sdd fix-ktlint` | `haiku` (cheapest) | `claude-haiku-4.5` | `SDD_MODEL_KTLINT` | Read, Grep, Glob, Edit | Fixes ktlint style/format violations (mechanically) |
 
-Copilot'taki gerçek model erişimi plana bağlıdır; yukarıdaki Copilot sütunu, sürücü
-tamamlandığında (T5) hedeflenen eşleşmedir. Env override'lar backend'den bağımsız aynı isimle
-çalışır — hangi backend seçilirse seçilsin `SDD_MODEL_*` set edilmişse o kazanır, yoksa
-tablodaki varsayılan kullanılır:
+Actual model access in Copilot depends on the plan; the Copilot column above shows the intended
+mapping once the driver is complete (T5). Environment overrides work with the same names regardless
+of the backend — whichever backend is selected, a set `SDD_MODEL_*` value wins; otherwise, the
+default in the table is used:
 
 ```bash
 SDD_MODEL_KTLINT=haiku ./scripts/sdd fix-ktlint
 SDD_MODEL_VERIFY=opus  ./scripts/sdd verify <spec>
 ```
 
-Claude tarafında alias (`opus` / `sonnet` / `haiku`) ya da tam model id (`claude-sonnet-5`)
-kullanılabilir. Premium kotayı yalnız değer kattığı yerde harca (align = en güçlü); mekanik iş
-(ktlint) en ucuz modelde.
+On the Claude side, aliases (`opus` / `sonnet` / `haiku`) or a full model ID
+(`claude-sonnet-5`) can be used. Spend premium quota only where it adds value (align = strongest);
+run mechanical work (ktlint) with the cheapest model.
 
-## İzinler
+## Permissions
 
-`.claude/settings.json` proje düzeyinde izinleri tanımlar: `./gradlew` ve `./scripts/sdd`
-serbest, `git push/commit/checkout/reset` sorar, `secrets.properties` / `local.properties` /
-keystore okumaları **yasak**.
+`.claude/settings.json` defines project-level permissions: `./gradlew` and `./scripts/sdd` are
+allowed, `git push/commit/checkout/reset` prompt, and reads of `secrets.properties` /
+`local.properties` / keystores are **forbidden**.
 
 ```bash
 SDD_PERM_IMPLEMENT=acceptEdits ./scripts/sdd implement <spec> T1
 ```
 
-`deny` kuralları her modda geçerlidir; `bypassPermissions` bile onları aşamaz.
+The `deny` rules apply in every mode; even `bypassPermissions` cannot override them.
 
-## Breaking Changes (Copilot desteği, spec 002)
+## Breaking Changes (Copilot support, spec 002)
 
-Copilot backend'i eklenirken Claude tarafında da iki kasıtlı, dar kapsamlı davranış değişti:
+When the Copilot backend was added, two deliberate, narrow behavior changes also occurred on the
+Claude side:
 
-1. **`sdd align`, CLI bulunamazsa artık exit 1 verir (önceden exit 0).** Eskiden hiçbir agent
-   CLI'ı yokken `align` manuel protokolü basıp başarıyla (exit 0) çıkardı; bunu "başarı" sayan
-   herhangi bir script artık güncellenmeli. Manuel protokol metni aynen korunuyor, sadece artık
-   hata yolunda basılıyor. Ayrıca `align` artık front matter'ı (`alignment`/`verify: pending`)
-   backend kontrolünden **önce değil sonra** yazıyor — CLI yoksa spec dosyası hiç değişmiyor.
-2. **`sdd verify`, altyapı hatasında front matter'a artık yazmıyor.** Komut çalışmadan biten bir
-   run (eksik binary, reddedilen `--model` gibi bir bayrak) artık `verify: failed` yazmıyor;
-   front matter'ı olduğu gibi bırakıp exit'i non-zero döndürüyor. Buna karşılık, CLI gerçekten
-   çalışıp bitmiş ama çıktısında ayrıştırılabilir bir `VERIFY:` satırı yoksa, davranış eskisi
-   gibi `verify: failed` yazmaya devam ediyor.
+1. **`sdd align`, if the CLI is missing, now exits 1 (previously exit 0).** Previously, when no
+   agent CLI was available, `align` printed the manual protocol and exited successfully (exit 0);
+   any script that treated this as "success" must now be updated. The manual protocol text remains
+   unchanged; it is only printed on the error path now. In addition, `align` now writes the front
+   matter (`alignment`/`verify: pending`) **after**, not before, backend validation — if the CLI is
+   missing, the spec file is not modified.
+2. **`sdd verify`, on infrastructure failure, no longer writes to the front matter.** A run that
+   ends before the command executes (missing binary, a rejected flag such as `--model`, etc.) no
+   longer writes `verify: failed`; it leaves the front matter unchanged and returns a non-zero
+   exit. In contrast, if the CLI actually runs and completes but its output contains no parseable
+   `VERIFY:` line, it continues to write `verify: failed` as before.
 
-Bunların ikisi de yalnız Claude backend'inde davranış değişikliği; Copilot backend'i zaten
-Claude'dan daha kısıtlı izinlerle çalışacak şekilde tasarlandı (bkz. İzinler), yani "davranış
-aynı kaldı" iddiası sadece Claude için geçerli.
+Both are behavior changes only on the Claude backend; the Copilot backend is designed to run with
+stricter permissions than Claude (see Permissions), so the claim that "behavior stayed the same"
+applies only to Claude.
 
-## Slash Komutları (interaktif oturum)
+## Slash Commands (interactive session)
 
-Terminalden `claude` ile girdiğinde:
+When you enter `claude` from the terminal:
 
 ```
 /sdd-align      specs/features/001-x/spec.md
@@ -407,45 +406,41 @@ Terminalden `claude` ile girdiğinde:
 /sdd-fix-ktlint app:ktlint
 ```
 
-Bunlar kolaylık içindir; **front matter kapılarını güncellemezler**. `verify: passed` gibi
-alanların yazılması için komutu `scripts/sdd` üzerinden çalıştır.
+These are convenience commands; **they do not update front matter gates**. To write fields such as
+`verify: passed`, run the command through `scripts/sdd`.
 
-## Spec Tipleri Ne Zaman Kullanılır
+## When to Use Spec Types
 
-| Durum | Tip |
+| Situation | Type |
 |-------|-----|
-| Yeni davranış ekliyorum | feature |
-| Mevcut davranış yanlış | bug |
-| Mevcut davranışı koruyorum | test |
-| Davranış aynı, kod yapısı değişiyor | refactor |
-| 1 saatten kısa cleanup | spec'siz commit |
+| I am adding new behavior | feature |
+| Existing behavior is wrong | bug |
+| I am preserving existing behavior | test |
+| Behavior is the same but the code structure changes | refactor |
+| Cleanup shorter than 1 hour | spec-less commit |
 
-## İpuçları
+## Tips
 
-**Bir spec, bir tip.** Hibrit durumlar için iki ayrı spec aç ve birbirine link ver.
+**One spec, one type.** For hybrid cases, create two separate specs and link them to each other.
 
-**Task'ları küçük tut.** 2 günden büyük ise spec'i böl.
+**Keep tasks small.** If a task takes more than 2 days, split the spec.
 
-**Refactor'da test güvenlik ağı şart.** Coverage yetersizse, refactor öncesi test spec'i aç.
+**Refactors require a test safety net.** If coverage is insufficient, create a test spec before the
+refactor.
 
-**CLAUDE.md'yi tekrar etme.** Spec'lerde sadece referans ver. Sapma varsa "Deviations from
-CLAUDE.md" bölümünde gerekçele.
+**Do not restate CLAUDE.md.** In specs, only reference it. If there is a deviation, explain it in
+the "Deviations from CLAUDE.md" section.
 
-**Implement öncesi temiz oturum.** Her `sdd implement` çağrısı kendi oturumunu açar; uzun
-sohbetlerde `/clear` ile başla.
+**Start with a clean session before implementing.** Every `sdd implement` call opens its own
+session; start with `/clear` in long conversations.
 
-**CLAUDE.md'yi şişirmeyin.** İçeriği büyüdükçe kurallara uyum düşer; kural eklemek gerekiyorsa
-CLAUDE.md'ye ekle, CLAUDE.md sadece import + Claude'a özgü notlar kalsın.
+**Do not bloat CLAUDE.md.** As the content grows, compliance with the rules declines; if a rule
+must be added, add it to CLAUDE.md and keep CLAUDE.md limited to imports and Claude-specific notes.
 
-## Sınırlamalar
+## Limitations
 
-- Bu kit iki backend hedefler: Claude Code CLI ve GitHub Copilot CLI (`SDD_AGENT=claude|copilot|
-  auto`, bkz. Kurulum). Copilot tarafı şu an iskelet halinde: backend seçimi ve model tabloları
-  hazır, ama gerçek sürücü (`scripts/lib/driver-copilot.sh`) henüz yazılmadı — `SDD_AGENT=copilot`
-  net bir "henüz yok" hatasıyla durur, elle çeviri gerekmez. Cursor/Aider gibi başka araçlar için
-  hâlâ destek yok.
-- `sdd align` interaktif terminal ister; CI'da çalışmaz (manuel protokol basar).
-- CLAUDE.md değişikliği takım onayı gerektirir — solo proje değilsen.
-- Spec yazmak overhead. Çok küçük işler için zorlama.
-- **Alignment kapısı tüm tiplerde geçerli.** Tüm şablonlarda `## Open Decisions (Alignment)`
-  bölümü var; bu yüzden `start`/`implement` her zaman cevapların dolu olmasını bekler.
+- `sdd align` requires an interactive terminal; it does not work in CI (it prints a manual protocol).
+- Changes to CLAUDE.md require team approval — if this is not a solo project.
+- Writing specs adds overhead. Do not force it for very small tasks.
+- **The alignment gate applies to all types.** All templates contain a `## Open Decisions (Alignment)`
+  section, so `start`/`implement` always expects the answers to be filled in.
