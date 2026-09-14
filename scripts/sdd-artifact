@@ -1,0 +1,36 @@
+
+#!/usr/bin/env bash
+# Build a portable SDD artifact from the repository's canonical SDD files.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+OUTPUT="${1:-$ROOT/dist/sdd-artifact}"
+PAYLOAD="$OUTPUT/payload"
+
+mkdir -p "$PAYLOAD"
+while IFS= read -r path || [ -n "$path" ]; do
+  case "$path" in
+    ""|\#*) continue ;;
+  esac
+  if [ "$path" = "SDD-README.md" ]; then
+    source="$ROOT/artifact/sdd-usage.md"
+  else
+    source="$ROOT/$path"
+  fi
+  if [ ! -e "$source" ]; then
+    echo "Missing artifact source: $path" >&2
+    exit 1
+  fi
+  destination="$PAYLOAD/$path"
+  mkdir -p "$(dirname "$destination")"
+  cp -pR "$source" "$destination"
+done < "$ROOT/artifact/manifest.txt"
+
+cp "$ROOT/artifact/manifest.txt" "$OUTPUT/manifest.txt"
+cp "$ROOT/artifact/gitignore.sdd" "$OUTPUT/gitignore.sdd"
+cp "$ROOT/artifact/install.sh" "$OUTPUT/install.sh"
+cp "$ROOT/README.md" "$OUTPUT/README.md"
+cp "$ROOT/artifact/sdd-usage.md" "$OUTPUT/payload/SDD-README.md"
+chmod +x "$OUTPUT/install.sh" "$PAYLOAD/scripts/sdd"
+
+echo "Created SDD artifact at $OUTPUT"

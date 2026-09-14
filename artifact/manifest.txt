@@ -1,0 +1,16 @@
+# SDD artifact payload
+# Paths are relative to the repository root and are installed unchanged.
+CLAUDE.md
+SDD-README.md
+.claude/agents/
+.claude/settings.json
+.github/agents/
+.github/copilot-instructions.md
+scripts/lib/deny-list.txt
+scripts/lib/driver-claude.sh
+scripts/lib/driver-copilot.sh
+scripts/sdd
+specs/templates/bug.md
+specs/templates/feature.md
+specs/templates/refactor.md
+specs/templates/test.md
