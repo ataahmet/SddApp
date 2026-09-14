@@ -83,14 +83,31 @@ Copilot CLI equivalents, taken from the GitHub documentation on 2026-09-13:
 | Edit permission | `--permission-mode acceptEdits` | `--allow-tool='read,search,edit,write'` |
 | Full (implement) | `--permission-mode bypassPermissions` | `--allow-tool='read,search,edit,write,shell'` |
 | Read-only | `--permission-mode dontAsk` + `--allowedTools` | `--allow-tool='read,search' --deny-tool='write,shell'` |
-| Clean stdout for verdict parsing | default | `-s` (required, or the banner breaks the `VERIFY:` grep) |
+| Clean stdout for verdict parsing | default | `-s --log-level none` — verified to emit the reply and nothing else |
 | Model | `--model opus` | `--model=claude-opus-5` (agent frontmatter > `--model` > `COPILOT_MODEL`) |
 
-**Two axes, not one.** An agent's `tools:` frontmatter decides which tools *exist* for that
-agent; `--allow-tool` decides which of them run *without a prompt*. A headless `-p` run needs a
-tool in both lists, so every mode's allow list above is a superset of what the agents it
-dispatches declare — `search` in particular, since all four agents translate `Grep`/`Glob` into
-it. `--deny-tool` then subtracts, and wins.
+**`--allow-tool` grants; it does not restrict.** Measured against Copilot CLI 1.0.83 on
+2026-09-13: under `-p`, tool use is auto-approved, so `shell` runs even with no `--allow-tool` at
+all (checked with no `~/.copilot/settings.json` and no `COPILOT_*` environment variable, so
+nothing else was granting it). An allow list therefore narrows nothing, and the allow lists in the
+table above are documentation of intent rather than a control.
+
+The controls that do bind are, in order:
+1. the agent's own `tools:` frontmatter, which `sync-agents` already generates — `sdd-verify`
+   gets `tools: read, search` and nothing else;
+2. `--deny-tool`, which genuinely blocks — `--deny-tool 'write,shell'` refused both a file
+   write and an `echo`, and `--deny-tool 'read(local.properties)'` refused that read;
+3. `--add-dir`, which bounds reachable paths.
+
+This corrects D4's premise. Its answer reasoned that an explicit allow list instead of
+`--allow-all-tools` makes the Copilot `implement` path stricter than the Claude one. The
+conclusion — do not pass `--allow-all-tools` — stands, since it would also disable path and URL
+verification, but it is `--deny-tool` plus the agent frontmatter that make the path strict, and
+`implement` legitimately needs `write` and `shell`, so there its strictness reduces to the
+`deny-list.txt` entries alone.
+
+`search` still belongs in every allow list: all four agents translate `Grep`/`Glob` into it, and
+it must not end up in a deny.
 
 `.claude/agents/*.md` stays the **single source** (pre-settled decision P3); `sdd sync-agents` generates the `.github/agents/`
 counterparts (frontmatter translated, body copied verbatim, `GENERATED — do not edit` banner).
@@ -100,10 +117,19 @@ Copilot plan offers them:
 
 | Role | Claude Code | Copilot CLI | Env override |
 |---|---|---|---|
-| align (strong) | `opus` | `claude-opus-5` | `SDD_MODEL_ALIGN` |
-| implement (mid) | `sonnet` | `claude-sonnet-5` | `SDD_MODEL_IMPLEMENT` |
-| verify (mid) | `sonnet` | `claude-sonnet-5` | `SDD_MODEL_VERIFY` |
-| fix-ktlint (cheap) | `haiku` | `claude-haiku-4.5` | `SDD_MODEL_KTLINT` |
+| align (strong) | `opus` | `auto` | `SDD_MODEL_ALIGN` |
+| implement (mid) | `sonnet` | `auto` | `SDD_MODEL_IMPLEMENT` |
+| verify (mid) | `sonnet` | `auto` | `SDD_MODEL_VERIFY` |
+| fix-ktlint (cheap) | `haiku` | `auto` | `SDD_MODEL_KTLINT` |
+
+D1 asked for the same Anthropic models on both sides, with any comparable model
+acceptable where the plan does not offer them. It does not: on this account every named
+model the CLI documents is refused with `Model "<name>" from --model flag is not available` —
+`claude-opus-5`, `claude-sonnet-5`, `claude-haiku-4.5`, `gpt-5-mini`, `gemini-3.5-flash` and
+five others were probed on 2026-09-14 and all failed; only `auto` runs. The spec's names were
+right (`copilot help config` lists them all); the entitlement is missing. So per-role selection
+has nothing to act on and all four roles resolve to `auto`. The `SDD_MODEL_*` overrides still
+win, so a named model can be pinned the moment a plan exposes one.
 
 Model availability depends on the Copilot plan, so every value is env-overridable and `sdd doctor`
 reports what the installed CLI actually accepts.
@@ -174,7 +200,7 @@ silent degradation).
 - [x] T2 – Move the Claude driver to `scripts/lib/driver-claude.sh`; add `SDD_AGENT` (`claude|copilot|auto`) resolution (binary presence only, no runtime fallback — D6) and neutral "CLI not found" messaging.
 - [x] T3 – **Breaking change 1 of §5 (D6):** unify the missing-CLI exit path. `cmd_align`'s CLI-not-found branch currently prints the manual protocol and falls through to exit 0; move that text into the shared `run_agent` error path so all four agent-backed commands print it and exit 1. Same task, same root cause: `cmd_align` writes `alignment: pending` and `verify: pending` *before* it checks that a backend exists, so a no-op run silently invalidates a passing verify — resolve the backend first and write nothing if it fails.
 - [x] T4 – **Breaking change 2 of §5 (D5):** split infrastructure failure from an inconclusive verdict in `cmd_verify`. Today the `verify: failed` write happens whenever no `VERIFY:` line is found, including when the CLI never ran. Have `run_agent` report *why* it failed; write `verify: failed` only for a completed run with unparseable output, and on infrastructure failure leave the front matter untouched and exit non-zero.
-- [ ] T5 – Add `scripts/lib/driver-copilot.sh`: `--agent`, `-p`, `-s`, `--allow-tool`/`--deny-tool` per mode, `--model` per role; `implement` mode uses the explicit allow list from D4, never `--allow-all-tools`. Before dispatching, the driver compares `.claude/agents/*.md` against `.github/agents/*.agent.md` and prints a warning naming any stale file — it then runs anyway and never regenerates (D7). It also expands `scripts/lib/deny-list.txt` (added in T10) into `--deny-tool` arguments for literal paths and `--add-dir` narrowing for the glob entries Copilot cannot express as a deny (D3).
+- [x] T5 – Add `scripts/lib/driver-copilot.sh`: `--agent`, `-p`, `-s`, `--allow-tool`/`--deny-tool` per mode, `--model` per role; `implement` mode uses the explicit allow list from D4, never `--allow-all-tools`. Before dispatching, the driver compares `.claude/agents/*.md` against `.github/agents/*.agent.md` and prints a warning naming any stale file — it then runs anyway and never regenerates (D7). It also expands `scripts/lib/deny-list.txt` (added in T10) into `--deny-tool` arguments for literal paths and `--add-dir` narrowing for the glob entries Copilot cannot express as a deny (D3).
 - [x] T6 – Replace `SDD_MODEL_*` literals with per-driver role→model tables (§3), keeping the existing env-var names as overrides.
 - [x] T7 – Add `sdd sync-agents`: translate `.claude/agents/*.md` frontmatter and emit `.github/agents/*.agent.md` with a generated-file banner. `model:` is dropped so the driver's `--model` stays authoritative (D2); `color:` is dropped too, simply because Copilot's agent schema has no such field.
 - [x] T8 – Rewrite the "How you are launched" sections of the four agent bodies in tool-neutral wording, then re-run `sdd sync-agents`.
@@ -188,7 +214,7 @@ silent degradation).
 - [ ] With `claude` installed and `SDD_AGENT` unset, `align`, `align-resolve`, `verify`,
       `implement`, `fix-ktlint` behave exactly as before this refactor — same prompts, same
       front-matter writes, same exit codes — **except** the two changes listed in §5.
-- [ ] With `SDD_AGENT=copilot`, `sdd verify <spec>` runs the `sdd-verify` agent read-only, its
+- [x] With `SDD_AGENT=copilot`, `sdd verify <spec>` runs the `sdd-verify` agent read-only, its
       verdict is parsed, and the spec's front matter is set to `verify: passed` or `failed`.
 - [ ] With `SDD_AGENT=copilot`, `sdd align <spec>` writes questions into the `## Open Decisions
       (Alignment)` section in the script-parseable format, and `align-resolve` accepts them.
@@ -205,7 +231,7 @@ silent degradation).
       if one does (D2). *First half verified after T7; the `sdd doctor` half waits on T11.*
 - [ ] `sdd doctor` exits non-zero when `.github/agents/` has drifted from `.claude/agents/`;
       the Copilot driver warns on drift but still runs and never auto-regenerates (D7).
-- [ ] Every entry in `scripts/lib/deny-list.txt` is covered on the Copilot backend by either a
+- [x] Every entry in `scripts/lib/deny-list.txt` is covered on the Copilot backend by either a
       `--deny-tool` flag or `--add-dir` path narrowing; `sdd doctor` reports which, and exits
       non-zero if any entry is covered by neither (D3).
 - [x] The `deny` array of `.claude/settings.json` matches `scripts/lib/deny-list.txt`, and its
@@ -271,7 +297,7 @@ throwaway copy, so its front matter can be reset between runs).
 2. **Question:** §3 states Copilot's precedence is "agent frontmatter > `--model` > `COPILOT_MODEL`", but the `.claude/agents/*.md` sources carry a `model:` alias (e.g. `model: sonnet` in `sdd-verify.md`) — if `sync-agents` translates it into the generated `.github/agents/*.agent.md`, the frontmatter will silently win over the `SDD_MODEL_*` env overrides promised in T4. Should the generator omit `model:` from the generated files so the driver's `--model` stays authoritative, keep it and treat the env vars as Claude-only, or translate it and drop `--model` for Copilot?
    - **Answer:** The generator omits `model:` from the generated `.github/agents/*.agent.md` files entirely, so the driver's `--model` stays authoritative and the `SDD_MODEL_*` overrides behave identically on both backends. The `model:` alias in `.claude/agents/*.md` is kept (Claude Code needs it) but is treated as source-only metadata that `sync-agents` deliberately drops. `sdd doctor` asserts that no generated agent file contains a `model:` key.
 3. **Question:** `.claude/settings.json` denies *paths* (`local.properties`, `secrets.properties`, `.env`, `*.jks`, `*.keystore`), while Copilot's `--deny-tool` is tool-granular, not path-granular. If the installed Copilot CLI cannot express a path-level deny, what is the required behaviour: a coarser policy (deny `write`/`shell`, read-only where possible) that accepts the residual read risk, refusal to run the Copilot backend at all, or a pre-flight guard in the driver? And which of `scripts/lib/deny-list.txt` vs `.claude/settings.json` is the generated artefact in T8?
-   - **Answer:** `scripts/lib/deny-list.txt` is the hand-edited source; the `deny` array of `.claude/settings.json` is generated from it (the `allow`/`ask` arrays stay hand-maintained and untouched). Copilot's `--deny-tool` accepts a plain path filter but supports wildcards only for `shell` and `url`, so the driver expands every literal path entry into `--deny-tool` and, for glob entries it cannot express (`*.jks`, `*.keystore`), narrows the agent's reachable paths with `--add-dir` instead of relying on a deny it cannot state. Refusing the Copilot backend is not acceptable, and the residual risk is not silently accepted: `sdd doctor` lists which deny entries are enforced by flag and which by path narrowing, and exits non-zero if any entry is covered by neither.
+   - **Answer:** `scripts/lib/deny-list.txt` is the hand-edited source; the `deny` array of `.claude/settings.json` is generated from it (the `allow`/`ask` arrays stay hand-maintained and untouched). **Superseded by measurement (2026-09-14, CLI 1.0.83):** `--deny-tool` supports wildcards for path denies too, not only for `shell` and `url` as the GitHub docs state. `read(*.jks)` and `read(**/*.jks)` each blocked a `.jks` file in the repo root over two consecutive runs, while a control run with no deny returned its contents; `**/` also matches zero directories, so one pattern covers root and nested alike. Every entry shape is therefore expressible as a deny: the driver emits `read(**/<entry>)` + `write(**/<entry>)` for paths and `shell(<entry>:*)` for commands, resolves nothing by globbing the filesystem at dispatch time (so a file created mid-run is still covered), and emits no `--add-dir` at all — that flag only ever *adds* reachable paths beyond the working directory and has no narrowing mode. Refusing the Copilot backend is not acceptable, and the residual risk is not silently accepted: `sdd doctor` lists which deny entries are enforced by flag and which by path narrowing, and exits non-zero if any entry is covered by neither.
 4. **Question:** `run_task` currently uses `--permission-mode bypassPermissions` (full shell, including gradle and git). What is the Copilot-side equivalent for `implement` — blanket `--allow-all-tools`, or an explicit allow list `read,edit,write,shell` combined with denies for destructive commands (`git push --force`, `rm`)? Must the two backends have identical effective permission breadth, or is the Copilot path allowed to be stricter (which would make T1's "no behaviour change" claim backend-dependent)?
    - **Answer:** Not `--allow-all-tools`. The Copilot `implement` mode uses an explicit allow list (`read,search,edit,write,shell` — `search` included because every agent declares `Grep`/`Glob`, which translates to it) plus the denies derived from `deny-list.txt`, including destructive shell commands (`git push --force`, `rm`). The two backends are therefore deliberately *not* identical in permission breadth: the Copilot path is stricter. T1's "no behaviour change" claim is scoped to the Claude backend only and §5 / §7 are worded accordingly.
 5. **Question:** What should the driver do when the installed Copilot CLI rejects a flag the design depends on (`--agent`, `-s`, `--allow-tool`/`--deny-tool`) or produces no parseable `VERIFY:` line? Options: fail fast with a clear error and leave the front matter untouched, keep today's `cmd_verify` behaviour of writing `verify: failed` on an inconclusive run, or degrade by inlining the agent body into the prompt instead of using `--agent`.
@@ -349,3 +375,7 @@ throwaway copy, so its front matter can be reset between runs).
 | 2026-09-13 | active | T12 done. verify FAIL on document self-consistency: two broken cross-references, and the T10 changelog row contradicting §4 about `.claude/settings.json`. Fixed, P1/P3 now cited inline in §3, and §4's boxes ticked for landed work |
 | 2026-09-13 | active | verify FAIL: §7 boxes lagged the work, and the T5/T11 deferral was an unlogged §9.1 task-order deviation. Ticked the five criteria verified live, split the `model:` criterion so its `sdd doctor` half stays open for T11, and logged the ordering in §10 |
 | 2026-09-13 | active | verify FAIL caught a real bug bound for T5: §3's allow lists omitted `search`, which every agent's `Grep`/`Glob` translates to, so the driver would have blocked search for all four. Allow lists corrected, the `full` mode row added, and the tools-vs-allow-tool interaction stated |
+| 2026-09-13 | active | Copilot CLI 1.0.83 installed; every flag §3 relies on probed against the real binary before T5. All exist and auth works. One premise corrected: under `-p` tools are auto-approved, so `--allow-tool` grants rather than restricts — `--deny-tool`, the agent `tools:` frontmatter and `--add-dir` are the real controls (D4) |
+| 2026-09-14 | active | T5 done. `driver-copilot.sh` dispatches `--agent` with per-mode allow lists, deny-list expansion and the drift warning; `sdd verify` under `SDD_AGENT=copilot` returns a parsed verdict and writes the front matter, exit 1 |
+| 2026-09-14 | active | T5 review corrected three things in the draft: `--no-ask-user` was missing on every mode (a headless `ask_user` call would hang), glob denies were resolved with `find` at dispatch time (leaving files created mid-run uncovered), and `--add-dir "$ROOT"` was emitted as an acknowledged no-op. Measurement showed `--deny-tool` does support path wildcards, so all three collapse into one direct expansion |
+| 2026-09-14 | active | Model table corrected to `auto`: no named model is entitled on this Copilot plan, though the names themselves were right (D1's fallback) |

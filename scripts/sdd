@@ -12,6 +12,8 @@ TEMPLATES="$SPECS/templates"
 
 # shellcheck source=lib/driver-claude.sh
 source "$ROOT/scripts/lib/driver-claude.sh"
+# shellcheck source=lib/driver-copilot.sh
+source "$ROOT/scripts/lib/driver-copilot.sh"
 
 # Agent backend selection: claude | copilot | auto (default). `auto` resolves by
 # binary presence only, claude first — no runtime fallback on auth/quota failure
@@ -216,14 +218,18 @@ list_tasks() { # <spec>
 model_default() { # <role> <backend>
   local role="$1" backend="$2"
   case "${role}:${backend}" in
-    align:claude)       echo "opus" ;;
-    align:copilot)       echo "claude-opus-5" ;;
+    align:claude)        echo "opus" ;;
     implement:claude)    echo "sonnet" ;;
-    implement:copilot)   echo "claude-sonnet-5" ;;
     verify:claude)       echo "sonnet" ;;
-    verify:copilot)      echo "claude-sonnet-5" ;;
-    ktlint:claude)        echo "haiku" ;;
-    ktlint:copilot)       echo "claude-haiku-4.5" ;;
+    ktlint:claude)       echo "haiku" ;;
+    # Copilot: every named model this plan was probed with is rejected by the
+    # CLI ("Model ... is not available"), including the ones `copilot help
+    # config` documents. Per-role selection therefore has no entitlement to
+    # act on and all four roles resolve to "auto", which works. The
+    # SDD_MODEL_* overrides still take precedence, so a named model can be
+    # pinned the moment the plan exposes one; `sdd doctor` (T11) reports what
+    # the installed CLI actually accepts.
+    align:copilot|implement:copilot|verify:copilot|ktlint:copilot) echo "auto" ;;
     *)
       echo "sdd: no default model for role '$role' on backend '$backend'" >&2
       return 1
@@ -259,12 +265,8 @@ model_for_role() { # <role> <backend>
 
 # Resolves SDD_AGENT (claude|copilot|auto) to a concrete backend by binary
 # presence only — no runtime fallback on auth/quota failure (D6). On success,
-# prints the backend name ("claude") on stdout. On failure, prints a neutral
-# English "CLI not found" message on stderr and returns 1.
-#
-# The copilot driver does not exist yet (scripts/lib/driver-copilot.sh, T5),
-# so a resolution to "copilot" — explicit or via auto — currently fails with
-# a clear "not implemented yet" message rather than a fake success.
+# prints the backend name ("claude"/"copilot") on stdout. On failure, prints a
+# neutral English "CLI not found" message on stderr and returns 1.
 resolve_agent_backend() {
   case "$SDD_AGENT" in
     claude)
@@ -272,16 +274,14 @@ resolve_agent_backend() {
       echo "claude"
       ;;
     copilot)
-      command -v copilot >/dev/null 2>&1 || { agent_not_found_message "copilot"; return 1; }
-      copilot_not_implemented_message
-      return 1
+      driver_copilot_available || { agent_not_found_message "copilot"; return 1; }
+      echo "copilot"
       ;;
     auto)
       if driver_claude_available; then
         echo "claude"
-      elif command -v copilot >/dev/null 2>&1; then
-        copilot_not_implemented_message
-        return 1
+      elif driver_copilot_available; then
+        echo "copilot"
       else
         agent_not_found_message "auto"
         return 1
@@ -301,11 +301,6 @@ agent_not_found_message() {
     copilot) echo "No agent CLI found: 'copilot' is not on PATH (SDD_AGENT=copilot). See README.md for setup." >&2 ;;
     *)       echo "No agent CLI found: neither 'claude' nor 'copilot' is on PATH (SDD_AGENT=auto). See README.md for setup." >&2 ;;
   esac
-  print_manual_protocol
-}
-
-copilot_not_implemented_message() {
-  echo "SDD_AGENT resolved to 'copilot', but the Copilot CLI driver is not implemented yet (scripts/lib/driver-copilot.sh, spec 002 T5). Install 'claude', or set SDD_AGENT=claude." >&2
   print_manual_protocol
 }
 
@@ -350,6 +345,9 @@ run_agent() {
   case "$backend" in
     claude)
       driver_claude_run_agent "$agent" "$mode" "$model" "$prompt"
+      ;;
+    copilot)
+      driver_copilot_run_agent "$agent" "$mode" "$model" "$prompt"
       ;;
     *)
       echo "run_agent: unsupported backend '$backend'" >&2
