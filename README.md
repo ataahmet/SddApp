@@ -1,54 +1,20 @@
-# SDD Artifact
+## 🚀 Specification-Driven Development (SDD) — A Disciplined Development Workflow for Mobile Projects
 
-This repository is the source for the portable SDD artifact used in Android projects.
-Run `scripts/sdd` to use the existing SDD workflow in this repository.
+# Core components of the project:
 
-## Creating the artifact
+A terminal-first CLI workflow — runs via scripts/sdd with no IDE plugin required
+AI agent support through Claude Code and GitHub Copilot CLI integration
+Spec lifecycle management with draft → ready → active → done states
+Alignment gate and verify gate mechanisms ensuring quality control before any code is written
+A portable artifact structure — integrates into existing projects with a single install.sh command
+🤖 Multi-agent architecture: Claude CLI & Copilot CLI, side by side.
 
-```bash
-./scripts/sdd-artifact
-```
+SDD is not locked to a single AI provider. The SDD_AGENT environment variable lets you choose your backend per command, and sdd sync-agents keeps agent definitions in sync across both platforms. Teams can run different specs with different agents in parallel — one agent per spec, ensuring consistency.
 
-Default output:
+# 📱 Android-first, but not platform-bound.
 
-```text
-dist/sdd-artifact/
-```
+While the current implementation is built on top of the Android ecosystem, the core of SDD — the spec lifecycle, AI agent discipline, shell-based CLI tools, and template structure — is entirely platform-agnostic. Since spec templates, git integration, and lifecycle management all operate through the terminal, an iOS adaptation (Xcode / Swift / SwiftUI) is on our roadmap. The goal is to turn SDD into a platform-independent standard for mobile development.
 
-Custom output path:
+# Why does this matter?
 
-```bash
-./scripts/sdd-artifact /tmp/sdd-artifact
-```
-
-The artifact package's installation documentation is in `dist/sdd-artifact/README.md`, which is
-the copy of this file inside the artifact. This document is not installed in the target project.
-
-## Installing into another Android project
-
-```bash
-dist/sdd-artifact/install.sh /path/to/target-android-project
-```
-
-The installation adds `CLAUDE.md`, `SDD-README.md`, `.claude/`, `.github/`, `scripts/`, and
-`specs/templates/` to the target project. It does not overwrite existing files by default.
-
-To intentionally update existing SDD files:
-
-```bash
-dist/sdd-artifact/install.sh --force /path/to/target-android-project
-```
-
-The installation preserves the existing contents of the target `.gitignore` and adds missing SDD
-rules:
-
-```text
-dist
-specs/features
-specs/bugs
-specs/refactors
-specs/tests
-```
-
-The installation also adds `SDD-README.md` to the target project. This file explains daily SDD
-usage in the target project.
+Because writing code with AI doesn't mean writing the right code. SDD ensures the AI agent understands what to build before it produces how to build it, preventing specification-less development at its root.
