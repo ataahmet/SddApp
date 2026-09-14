@@ -278,10 +278,10 @@ resolve_agent_backend() {
       echo "copilot"
       ;;
     auto)
-      if driver_claude_available; then
-        echo "claude"
-      elif driver_copilot_available; then
+      if driver_copilot_available; then
         echo "copilot"
+      elif driver_claude_available; then
+        echo "claude"
       else
         agent_not_found_message "auto"
         return 1
