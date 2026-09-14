@@ -1,4 +1,4 @@
-# Android SDD Artifact
+# SDD Artifact
 
 Bu repository, Android projelerinde kullanılacak taşınabilir SDD artifact'inin kaynağıdır.
 Mevcut SDD akışını bu repository içinde kullanmak için `scripts/sdd` komutunu çalıştırabilirsin.
