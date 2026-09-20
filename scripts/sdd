@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # sdd — Specification-Driven Development CLI
-# Flow: new → ready → align → verify → start(branch) → implement → done
+# Flow: new → ready → align → align-resolve → critique(loop) → verify → start(branch) → implement → done
 # Lifecycle: draft → ready → active → done | blocked | dropped
 # Gate: verify must PASS (no open questions) before implement can run.
 # Details: CLAUDE.md §9 / §9.1, README.md
@@ -14,6 +14,8 @@ TEMPLATES="$SPECS/templates"
 source "$ROOT/scripts/lib/driver-claude.sh"
 # shellcheck source=lib/driver-copilot.sh
 source "$ROOT/scripts/lib/driver-copilot.sh"
+# shellcheck source=lib/critique.sh
+source "$ROOT/scripts/lib/critique.sh"
 
 # Agent backend selection: claude | copilot | auto (default). `auto` resolves by
 # binary presence only, claude first — no runtime fallback on auth/quota failure
@@ -28,6 +30,8 @@ SDD_AGENT="${SDD_AGENT:-auto}"
 #   SDD_MODEL_ALIGN     — strongest  — open decision generation
 #   SDD_MODEL_IMPLEMENT — medium     — code writing
 #   SDD_MODEL_VERIFY    — medium     — read-only inspection
+#   SDD_MODEL_CRITIQUE  — strongest  — adversarial spec review (reviewer half)
+#   SDD_MODEL_REFINE    — medium     — applying review action items (executor half)
 #   SDD_MODEL_KTLINT    — cheapest   — mechanical format fixing
 
 ###############################################################################
@@ -219,6 +223,8 @@ model_default() { # <role> <backend>
   local role="$1" backend="$2"
   case "${role}:${backend}" in
     align:claude)        echo "opus" ;;
+    critique:claude)     echo "opus" ;;
+    refine:claude)       echo "sonnet" ;;
     implement:claude)    echo "sonnet" ;;
     verify:claude)       echo "sonnet" ;;
     ktlint:claude)       echo "haiku" ;;
@@ -229,7 +235,7 @@ model_default() { # <role> <backend>
     # SDD_MODEL_* overrides still take precedence, so a named model can be
     # pinned the moment the plan exposes one; `sdd doctor` (T11) reports what
     # the installed CLI actually accepts.
-    align:copilot|implement:copilot|verify:copilot|ktlint:copilot) echo "auto" ;;
+    align:copilot|critique:copilot|refine:copilot|implement:copilot|verify:copilot|ktlint:copilot) echo "auto" ;;
     *)
       echo "sdd: no default model for role '$role' on backend '$backend'" >&2
       return 1
@@ -244,6 +250,8 @@ model_for_role() { # <role> <backend>
   local role="$1" backend="$2" override=""
   case "$role" in
     align)     override="${SDD_MODEL_ALIGN:-}" ;;
+    critique)  override="${SDD_MODEL_CRITIQUE:-}" ;;
+    refine)    override="${SDD_MODEL_REFINE:-}" ;;
     implement) override="${SDD_MODEL_IMPLEMENT:-}" ;;
     verify)    override="${SDD_MODEL_VERIFY:-}" ;;
     ktlint)    override="${SDD_MODEL_KTLINT:-}" ;;
@@ -615,6 +623,9 @@ cmd_align() {
   fm_upsert "$spec" alignment "pending"
   # Re-aligning changes the spec → any prior verify pass is stale, force a re-verify.
   fm_upsert "$spec" verify "pending"
+  # Same reasoning for the critique loop: new questions mean the reviewed
+  # artifact no longer exists, so a prior convergence no longer describes it.
+  fm_upsert "$spec" critique "pending"
   fm_set "$spec" updated "$(today)"
 
   echo "→ Alignment ($backend): questions will be generated and written into the spec ..."
@@ -629,6 +640,7 @@ cmd_align() {
   grep -E '^alignment:' "$spec" || true
   echo "  Next: open the spec, fill each '- **Answer:**' line, then:"
   echo "    ./scripts/sdd align-resolve $spec"
+  echo "    ./scripts/sdd critique $spec"
   echo "    ./scripts/sdd verify $spec"
 }
 
@@ -657,7 +669,7 @@ cmd_align_resolve() {
   fm_set "$spec" alignment "resolved"
   fm_set "$spec" updated "$(today)"
   echo "✓ All alignment questions answered → alignment: resolved ($quest/$quest)."
-  echo "  Next: sdd verify $spec"
+  echo "  Next: sdd critique $spec   (then: sdd verify $spec)"
 }
 
 # draft → ready gate: are the required sections from CLAUDE.md §9.1 filled?
@@ -688,6 +700,7 @@ cmd_start() {
   [ "$status" = "ready" ] || { echo "start only works from ready (current: $status). Run 'sdd ready' first."; exit 1; }
 
   require_alignment_resolved "$spec" || exit 1
+  require_critique_converged "$spec" || exit 1
   require_verify_passed "$spec" || exit 1
 
   local id name branch
@@ -714,6 +727,7 @@ cmd_implement() {
   [ "$cur" = "$branch" ] || { echo "Wrong branch ($cur). Expected: $branch"; exit 1; }
 
   require_alignment_resolved "$spec" || exit 1
+  require_critique_converged "$spec" || exit 1
   require_verify_passed "$spec" || exit 1
   resolve_agent_backend >/dev/null || exit 1
 
@@ -894,6 +908,7 @@ Usage:
   sdd new <feature|bug|test|refactor> "title"       Create a spec (status: draft)
   sdd align  <spec.md>                               Generate alignment questions (agent writes them into the spec)
   sdd align-resolve <spec.md>                        Check all '**Answer:**' lines are filled → alignment: resolved
+  sdd critique <spec.md> [--rounds N] [--threshold N]  Critique-to-action loop: a reviewer model (SDD_MODEL_CRITIQUE) scores the spec, executor applies the action items, repeat until converged (default: max 4 rounds, >= 6/10 and 0 critical)
   sdd ready  <spec.md>                               Required-sections gate → status: ready
   sdd start  <spec.md>                               Open branch (agent) → status: active (alignment: resolved required)
   sdd verify <spec.md>                               Mandatory gate: check spec vs CLAUDE.md → verify: passed/failed
@@ -905,6 +920,7 @@ Usage:
   sdd drop   <spec.md> "<reason>"                    status: dropped
   sdd list   [feature|bug|test|refactor]             List specs
 
+Flow:      new → ready → align → align-resolve → critique → verify → start → implement → done
 Lifecycle: draft → ready → active → done | blocked | dropped (CLAUDE.md §9.1)
 Branch:    main/{task_id}-{task_name} (e.g. main/001-biometric-login)
 EOF
@@ -916,6 +932,7 @@ main() {
     new)            cmd_new "$@" ;;
     align)          cmd_align "$@" ;;
     align-resolve)  cmd_align_resolve "$@" ;;
+    critique)       cmd_critique "$@" ;;
     ready)          cmd_ready "$@" ;;
     start)          cmd_start "$@" ;;
     implement)      cmd_implement "$@" ;;
