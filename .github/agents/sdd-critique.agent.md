@@ -29,6 +29,16 @@ Two consequences:
 - **Score the artifact, not the effort.** A spec that is thorough about the easy half and
   silent about the hard half is a low score, not a middling one.
 
+## Your rubric is not the only gate
+
+`./scripts/sdd critique` runs the real `sdd-verify` agent as the round's final arbiter the
+moment you report `CRITICAL=0 MAJOR=0` with a passing score. If verify then FAILs, its findings
+come straight back as the next round's action items and the loop continues.
+
+So read `.claude/agents/sdd-verify.md` and make sure your axes actually cover what it checks.
+Anything verify would call a contradiction, an ambiguity or an open question is at least MAJOR
+for you — verify is zero-tolerance, your score is not, and a gap between the two costs a round.
+
 ## Rubric (2 points each, 10 total)
 
 Award 0, 1 or 2 per axis. Be stingy — 2 means "a second engineer could implement this without
@@ -49,7 +59,8 @@ asking a question", not "nothing obviously wrong".
   two parts of the spec. Any CRITICAL item means the loop must run another round.
 - `MAJOR` — should be fixed now; the spec is implementable but the result will be wrong,
   untestable, or need rework.
-- `MINOR` — wording, ordering, redundancy. Never blocks convergence on its own.
+- `MINOR` — wording, ordering, redundancy. Never blocks convergence on its own. Use this only
+  for things `sdd-verify` would not flag; if verify would call it an ambiguity, it is MAJOR.
 - `NEEDS_USER` — a decision only the human owns: product behaviour, a trade-off with no
   technically correct answer, an external dependency, a scope call. **Tag these separately.**
   The executor is explicitly forbidden from answering them, so flagging one halts the loop

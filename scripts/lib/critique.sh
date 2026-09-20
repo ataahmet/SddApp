@@ -44,11 +44,20 @@
 #     spec-only   → the reviewer reads the spec and CLAUDE.md.
 #     repo        → the reviewer may also read the surrounding codebase to
 #                   check the spec's contracts against what actually exists.
+# SDD_CRITIQUE_VERIFY     — 1 | 0                                  (default 1)
+#     1 → once the reviewer is satisfied, the REAL 'sdd verify' gate runs as
+#         the final arbiter of the round. Its FAIL report becomes the next
+#         round's action items. The loop exits only on VERIFY: PASS.
+#     0 → the reviewer's own rubric is the only exit condition (faster, but
+#         'sdd verify' can then still FAIL on a converged spec: its bar is
+#         zero-tolerance while the rubric's is a score).
 # SDD_MODEL_CRITIQUE      — reviewer model. Set this to a model from a family
 #                           OTHER than the executor's to get the cross-family
 #                           review ARIS recommends; the loop warns when both
 #                           halves resolve to the same family.
 # SDD_MODEL_REFINE        — executor (refine) model.
+# SDD_MODEL_VERIFY        — model for the in-loop verify gate (same variable
+#                           'sdd verify' already uses).
 
 CRITIQUE_ROUNDS_DEFAULT=4
 CRITIQUE_THRESHOLD_DEFAULT=6
@@ -152,6 +161,38 @@ critique_score() { # <output-file>  → integer 0-10, empty when unparseable
 }
 
 ###############################################################################
+# In-loop verify gate
+###############################################################################
+# The reviewer's rubric and 'sdd verify' do not measure the same thing: the
+# rubric is a score with a tolerance, verify is zero-tolerance. A spec can
+# therefore satisfy the reviewer and still FAIL verify — on findings no round
+# ever reported, because the reviewer was never asked about them.
+#
+# So once the reviewer is satisfied, the real verify agent runs as the round's
+# final arbiter. ARIS does the same thing with experiments: the reviewer does
+# not predict results, the actual run happens inside the loop and its output
+# feeds the next revision.
+#
+# Writes the agent's raw output to <out-path>. Returns:
+#   0 → VERIFY: PASS
+#   1 → VERIFY: FAIL, or a completed run with no parseable verdict (treated as
+#       FAIL, exactly as cmd_verify does)
+#   2 → infrastructure failure: the CLI never produced usable output
+critique_run_verify_gate() { # <spec> <out-path>
+  local spec="$1" out="$2"
+  if ! run_agent "sdd-verify" "readonly" "verify" \
+    "Use the sdd-verify subagent for spec: $spec
+Then relay the subagent's verdict line verbatim as YOUR first line of output: either
+'VERIFY: PASS' or 'VERIFY: FAIL', with nothing before it — not a preamble, not a heading.
+Put your summary after that line. This line is parsed by a script; omitting it fails the run."; then
+    rm -f "${RUN_AGENT_OUTPUT:-}"
+    return 2
+  fi
+  mv "$RUN_AGENT_OUTPUT" "$out"
+  grep -qE 'VERIFY:[[:space:]]*PASS' "$out"
+}
+
+###############################################################################
 # The loop
 ###############################################################################
 
@@ -250,10 +291,12 @@ cmd_critique() {
   echo "    executor : $exec_model   ($(critique_model_family "$exec_model"))"
   echo "    rounds   : max $rounds        threshold: >= $threshold/10 and 0 critical"
   echo "    context  : $context           scope: $scope"
+  echo "    exit gate: reviewer rubric$([ "${SDD_CRITIQUE_VERIFY:-1}" = "1" ] && echo " + sdd-verify PASS" || echo " only (SDD_CRITIQUE_VERIFY=0)")"
   critique_warn_same_family "$review_model" "$exec_model"
   echo
 
   local round=1 score="" critical="" major="" needs_user="" verdict="" outcome="max_rounds" last_score=0
+  local verify_passed=0
   while [ "$round" -le "$rounds" ]; do
     echo "════════════════ round $round / $rounds ════════════════"
 
@@ -346,17 +389,67 @@ the report after them. These lines are parsed by a script; omitting them fails t
       break
     fi
 
-    if [ "$score" -ge "$threshold" ] && [ "$critical" -eq 0 ]; then
-      outcome="converged"
+    # MAJOR=0 is part of the bar on purpose. Converging with MAJOR items open
+    # used to leave them unapplied: the loop breaks on convergence, so refine
+    # never ran on the satisfied round and those items stayed in the report
+    # instead of the spec — where 'sdd verify' then found them.
+    local gate_report="$report" gate_kind="critique"
+    if [ "$score" -ge "$threshold" ] && [ "$critical" -eq 0 ] && [ "$major" -eq 0 ]; then
+      if [ "${SDD_CRITIQUE_VERIFY:-1}" != "1" ]; then
+        outcome="converged"
+        echo
+        echo "✓ Converged: score $score/10 >= $threshold, no critical or major items left."
+        echo "  (in-loop verify disabled via SDD_CRITIQUE_VERIFY=0 — run 'sdd verify' yourself)"
+        break
+      fi
+
+      #########################################################################
+      # Final arbiter: the real verify gate, on the real spec.
+      #########################################################################
       echo
-      echo "✓ Converged: score $score/10 >= $threshold and no critical items left."
-      break
+      echo "→ Reviewer satisfied — running the verify gate as final arbiter ..."
+      local vout="$report_dir/round-$round-verify.md"
+      local vrc=0
+      critique_run_verify_gate "$spec" "$vout" || vrc=$?
+
+      if [ "$vrc" -eq 2 ]; then
+        echo
+        echo "✗ The verify gate could not run (CLI failed before producing output)." \
+             "Front matter left at 'pending'; fix the CLI and re-run 'sdd critique'." >&2
+        fm_upsert "$spec" critique "failed"
+        exit 1
+      fi
+
+      if [ "$vrc" -eq 0 ]; then
+        critique_log_append "$spec" "$round v" "$score" "0" "0" "VERIFY:PASS" \
+          "critique/round-$round-verify.md"
+        outcome="converged"
+        verify_passed=1
+        echo "  ✓ VERIFY: PASS"
+        echo
+        echo "✓ Converged: score $score/10, no critical/major items, and verify passed."
+        break
+      fi
+
+      # Verify FAILed on a spec the reviewer was happy with — exactly the case
+      # that used to slip through. Its findings become this round's action
+      # items, so the next round fixes them instead of the user discovering
+      # them after the loop has already declared success.
+      critique_log_append "$spec" "$round v" "$score" "1" "0" "VERIFY:FAIL" \
+        "critique/round-$round-verify.md"
+      gate_report="$vout"
+      gate_kind="verify"
+      echo "  ✗ VERIFY: FAIL — feeding its findings back into the loop."
     fi
 
     if [ "$round" -eq "$rounds" ]; then
       outcome="max_rounds"
       echo
-      echo "✗ Round cap reached without convergence (last score $score/10, $critical critical)."
+      if [ "$gate_kind" = "verify" ]; then
+        echo "✗ Round cap reached: the reviewer was satisfied but verify still FAILs."
+      else
+        echo "✗ Round cap reached without convergence (last score $score/10, $critical critical, $major major)."
+      fi
       break
     fi
 
@@ -364,19 +457,37 @@ the report after them. These lines are parsed by a script; omitting them fails t
     # Step 3-4 — executor addresses the action items.
     ###########################################################################
     echo
-    echo "→ Applying action items with sdd-refine ($exec_model) ..."
-    run_agent "sdd-refine" "edit" "refine" \
-      "Use the sdd-refine subagent to apply the reviewer's action items.
+    if [ "$gate_kind" = "verify" ]; then
+      echo "→ Applying verify findings with sdd-refine ($exec_model) ..."
+      run_agent "sdd-refine" "edit" "refine" \
+        "Use the sdd-refine subagent to resolve a FAILED verify gate.
+
+## Spec
+$spec
+
+## Verify report (round $round)
+$gate_report
+
+The spec satisfied the review rubric but 'sdd verify' still FAILED. Treat every contradiction,
+ambiguity and open question the report names as a CRITICAL item and resolve it in the spec. Do
+NOT answer any '**Answer:**' line in '## Open Decisions (Alignment)' yourself — if the report
+names a decision the user owns, leave it and say so in your report. Touch the spec only; write
+no production code."
+    else
+      echo "→ Applying action items with sdd-refine ($exec_model) ..."
+      run_agent "sdd-refine" "edit" "refine" \
+        "Use the sdd-refine subagent to apply the reviewer's action items.
 
 ## Spec
 $spec
 
 ## Reviewer report (round $round)
-$report
+$gate_report
 
 Apply every CRITICAL and MAJOR item to the spec. Do NOT answer any '**Answer:**' line in
 '## Open Decisions (Alignment)' yourself — if an item needs a decision the user owns, leave it
 and say so in your report. Touch the spec only; write no production code."
+    fi
 
     fm_set "$spec" updated "$(today)"
     round=$((round + 1))
@@ -390,8 +501,18 @@ and say so in your report. Touch the spec only; write no production code."
   case "$outcome" in
     converged)
       echo "✓ critique: converged  (score $last_score/10 after $round round(s))"
-      echo "  The spec changed during the loop → verify was reset to 'pending'."
-      echo "  Next: ./scripts/sdd verify $spec"
+      if [ "$verify_passed" -eq 1 ]; then
+        # The gate ran on this exact content and passed, and nothing has edited
+        # the spec since (the loop breaks immediately on PASS), so recording the
+        # result here is honest rather than a shortcut.
+        fm_upsert "$spec" verify "passed"
+        fm_set "$spec" updated "$(today)"
+        echo "  The verify gate ran inside the loop and PASSED → verify: passed."
+        echo "  Next: ./scripts/sdd start $spec"
+      else
+        echo "  The spec changed during the loop → verify was reset to 'pending'."
+        echo "  Next: ./scripts/sdd verify $spec"
+      fi
       return 0
       ;;
     needs_user)
@@ -404,6 +525,8 @@ and say so in your report. Touch the spec only; write no production code."
     *)
       echo "✗ critique: max_rounds  (best score $last_score/10, threshold $threshold)"
       echo "  Read: ${report_dir#$ROOT/}/round-$rounds.md"
+      [ -f "$report_dir/round-$rounds-verify.md" ] && \
+        echo "       ${report_dir#$ROOT/}/round-$rounds-verify.md  (verify gate findings)"
       echo "  Fix the remaining items by hand and re-run 'sdd critique', or — if the"
       echo "  reviewer is wrong — justify it under '## Deviations from CLAUDE.md' and set"
       echo "  'critique: skipped' in the front matter to release the gate deliberately."

@@ -61,7 +61,7 @@ Once the driver is complete, this note will be removed; until then, keep `claude
 
 ### 3. Backend Selection — SDD_AGENT
 
-`scripts/sdd` routes all four agent calls (`align`, `implement`, `verify`, `fix-ktlint`) through a
+`scripts/sdd` routes all agent calls (`align`, `critique`, `implement`, `verify`, `fix-ktlint`) through a
 single driver choice; the environment variable `SDD_AGENT` selects which CLI is used:
 
 | Value | Behavior |
@@ -90,6 +90,8 @@ project-root/
 │   ├── settings.json              # project permissions; `deny` is GENERATED from deny-list.txt
 │   └── agents/                    # agent definitions — the SINGLE SOURCE edited by hand
 │       ├── sdd-align.md           # used by `sdd align`
+│       ├── sdd-critique.md        # used by `sdd critique` (reviewer half)
+│       ├── sdd-refine.md          # used by `sdd critique` (executor half)
 │       ├── sdd-implement.md       # used by `sdd implement`
 │       ├── sdd-verify.md           # used by `sdd verify`
 │       └── kotlin-ktlint.md       # used by `sdd fix-ktlint`
@@ -97,12 +99,15 @@ project-root/
 │   ├── copilot-instructions.md    # thin pointer: @CLAUDE.md + spec-first rule
 │   └── agents/                    # GENERATED — do not edit; run `sdd sync-agents`
 │       ├── sdd-align.agent.md
+│       ├── sdd-critique.agent.md
+│       ├── sdd-refine.agent.md
 │       ├── sdd-implement.agent.md
 │       ├── sdd-verify.agent.md
 │       └── kotlin-ktlint.agent.md
 ├── scripts/
 │   ├── sdd                        # ana CLI script (chmod +x)
 │   └── lib/
+│       ├── critique.sh           # critique-to-action loop (sdd critique)
 │       ├── driver-claude.sh       # Claude Code backend driver
 │       ├── driver-copilot.sh      # Copilot CLI backend driver (T5 — not implemented yet)
 │       └── deny-list.txt          # single source for secret-file/command denies
@@ -124,7 +129,7 @@ After setup, run once: `chmod +x scripts/sdd`.
 
 ## Commands
 
-> **Flow order:** `new → ready → align → align-resolve → verify → start → implement → done`
+> **Flow order:** `new → ready → align → align-resolve → critique → verify → start → implement → done`
 
 First task: `./scripts/sdd doctor` — CLI, session, agent files
 
@@ -201,6 +206,89 @@ them later:
 If any answer is missing, it stops and prints **which question** is empty. `start`/`implement` will
 not work until `alignment: resolved` is set.
 
+### Critique — Critique-to-Action Loop (required gate)
+
+```bash
+./scripts/sdd critique specs/features/{task_id}-{task_name}/spec.md
+./scripts/sdd critique <spec> --rounds 6 --threshold 8
+```
+
+An adversarial review loop modelled on ARIS (arXiv:2605.03042 §2.2). It runs on an **aligned**
+spec — `alignment: resolved` is a precondition — and each round does four things:
+
+1. **Review.** The `sdd-critique` agent runs read-only (`--tools "Read,Grep,Glob"`), scores the
+   spec on a 5-axis rubric, and returns severity-tagged action items. It is handed the spec
+   *path*, never a summary: summarising first would have it grade the executor's framing instead
+   of the artifact.
+2. **Arbitration.** As soon as the reviewer reports `CRITICAL=0 MAJOR=0` with a passing score,
+   the real `sdd-verify` agent runs as the round's final arbiter. **The loop exits only on
+   `VERIFY: PASS`.** A FAIL is not a dead end — its findings become the next round's action
+   items, so the same zero-tolerance bar that blocks `start` is enforced *inside* the loop
+   rather than discovered after it.
+3. **Action.** The `sdd-refine` agent applies the items to the spec. It has no `Write` or `Bash`
+   tool and is explicitly forbidden from filling in any `- **Answer:**` line — alignment answers
+   belong to you, not the agent.
+4. **Convergence check.** Exit when score ≥ threshold, zero CRITICAL, zero MAJOR, and verify
+   PASSes; otherwise run another round, up to the cap.
+
+```
+→ Critique-to-action loop  (claude)
+    reviewer : gpt-4o   (gpt)
+    executor : sonnet   (claude)
+    rounds   : max 4        threshold: >= 6/10 and 0 critical
+    context  : fresh           scope: spec-only
+    exit gate: reviewer rubric + sdd-verify PASS
+
+════════════════ round 2 / 4 ════════════════
+  score=7/10  critical=0  major=0  verdict=CONVERGED
+→ Reviewer satisfied — running the verify gate as final arbiter ...
+  ✗ VERIFY: FAIL — feeding its findings back into the loop.
+→ Applying verify findings with sdd-refine (sonnet) ...
+════════════════ round 3 / 4 ════════════════
+  score=9/10  critical=0  major=0  verdict=CONVERGED
+  ✓ VERIFY: PASS
+✓ Converged: score 9/10, no critical/major items, and verify passed.
+```
+
+**Outcomes** (written to the `critique:` front-matter field):
+
+| Value | Meaning | What to do |
+|-------|---------|------------|
+| `converged` | Rubric cleared **and** verify PASSed | `verify: passed` is written too → go straight to `sdd start` |
+| `needs_user` | The reviewer hit a decision only you can make | Answer it in `## Open Decisions (Alignment)`, re-run `sdd critique` |
+| `max_rounds` | Cap reached without convergence | Read the last report (and `round-N-verify.md`), fix by hand, re-run |
+| `skipped` | You deliberately released the gate | Justify it under "Deviations from CLAUDE.md" |
+| *(absent)* | Spec predates this gate | Not blocked — backwards compatible |
+
+**Ledger.** Every round writes `<spec-dir>/critique/round-N.md`, every arbitration writes
+`round-N-verify.md`, and a summary row per round is appended to the spec's `## Critique Log`
+table. Rejected directions stay on the record, so a later run does not re-propose them.
+
+**Cross-family review.** ARIS's first design principle is that reviewer and executor should not
+share a model family — a same-family pair shares its blind spots. Here that is a **model-level**
+choice resolved by `model_for_role`, so no second CLI is needed:
+
+```bash
+SDD_MODEL_CRITIQUE=gpt-4o ./scripts/sdd critique <spec>   # reviewer: gpt, executor: claude
+```
+
+The loop prints the family of each half and warns (never fails) when both land in the same one.
+Make it the default by changing the `critique:claude` row in `model_default` inside `scripts/sdd`.
+
+**Tunables:**
+
+| Variable | Default | Effect |
+|----------|---------|--------|
+| `SDD_CRITIQUE_ROUNDS` / `--rounds` | `4` | Round cap |
+| `SDD_CRITIQUE_THRESHOLD` / `--threshold` | `6` | Score needed out of 10 |
+| `SDD_CRITIQUE_VERIFY` | `1` | `0` drops the in-loop verify arbiter (faster; `sdd verify` can then still FAIL on a converged spec) |
+| `SDD_CRITIQUE_CONTEXT` | `fresh` | `cross-round` lets the reviewer read its earlier reports and confirm items were addressed |
+| `SDD_CRITIQUE_SCOPE` | `spec-only` | `repo` lets the reviewer check the spec's contracts against the actual codebase |
+| `SDD_MODEL_CRITIQUE` / `SDD_MODEL_REFINE` | `opus` / `sonnet` | Model per half |
+
+> **Re-running `sdd align` resets `critique` to `pending`** — new questions mean the reviewed
+> artifact no longer exists, so an earlier convergence no longer describes it.
+
 ### Verify (required gate)
 
 ```bash
@@ -215,6 +303,11 @@ captures this verdict and writes `verify: passed` / `verify: failed` to the fron
 contradiction or even a minor ambiguity, it returns FAIL; clarify the issue and rerun. If
 `sdd align` runs again, the spec changes and `verify` returns to `pending`.
 
+> **Running it standalone is usually redundant.** `sdd critique` runs this same agent as its
+> arbiter and writes `verify: passed` on success, so a converged spec arrives here already
+> green. Run `sdd verify` by itself when you edited the spec by hand after the loop, or when
+> you used `SDD_CRITIQUE_VERIFY=0`.
+
 ### Start a Branch (start)
 
 ```bash
@@ -228,8 +321,8 @@ contradiction or even a minor ambiguity, it returns FAIL; clarify the issue and 
 > **Note:** If a branch named `main` already exists, Git cannot create the `main/...` ref. In that
 > case, use `SDD_BRANCH_PREFIX=feature ./scripts/sdd start …` (or update the CLAUDE.md §9.1 rule).
 
-> **Gates:** `alignment: resolved` + `verify: passed` are required before branch creation.
-> The order is always `align → verify → start`.
+> **Gates:** `alignment: resolved` + `critique: converged` + `verify: passed` are required
+> before branch creation. The order is always `align → critique → verify → start`.
 
 ### Implement Tasks
 
@@ -279,6 +372,7 @@ It is not part of the lifecycle; it can be called at any stage.
 ./scripts/sdd ready          <spec.md>          # draft → ready (required section gate)
 ./scripts/sdd align          <spec.md>          # generate/ask alignment questions (interactive)
 ./scripts/sdd align-resolve  <spec.md>          # all answers filled? → alignment: resolved
+./scripts/sdd critique       <spec.md>          # required gate → critique: converged (loop)
 ./scripts/sdd verify         <spec.md>          # required gate → verify: passed/failed
 ./scripts/sdd start          <spec.md>          # ready → active (+branch)
 ./scripts/sdd done           <spec.md>          # quality gates + active → done
@@ -305,7 +399,10 @@ $EDITOR specs/features/001-biometric-login/spec.md
 # 4. Alignment: the agent generates questions, asks you, writes the answers, and resolves them
 ./scripts/sdd align specs/features/001-biometric-login/spec.md
 
-# 5. Required gate: start/implement will not run without verify passed
+# 5. Required gate: adversarial review loop until the rubric AND verify are clear
+SDD_MODEL_CRITIQUE=gpt-4o ./scripts/sdd critique specs/features/001-biometric-login/spec.md
+
+# 5b. Only needed if you hand-edited the spec after the loop (critique writes verify: passed)
 ./scripts/sdd verify specs/features/001-biometric-login/spec.md
 
 # 6. Commit the spec
@@ -344,6 +441,8 @@ files intentionally omit the `model:` field — model selection always comes fro
 | Agent | Command using it | Model — Claude | Model — Copilot | Env override | Tools (Claude) | Task |
 |-------|---------------|-----------------|-------------------|---------------|--------------------|-------|
 | `sdd-align` | `sdd align` | `opus` (strongest) | `claude-opus-5` | `SDD_MODEL_ALIGN` | Read, Grep, Glob, Edit, Write, AskUserQuestion, Bash | Generates open decisions, asks the user, and writes the answers |
+| `sdd-critique` | `sdd critique` | `opus` (strongest) | `claude-opus-5` | `SDD_MODEL_CRITIQUE` | Read, Grep, Glob | Scores the spec on a 5-axis rubric and returns severity-tagged action items (read-only) |
+| `sdd-refine` | `sdd critique` | `sonnet` (mid) | `claude-sonnet-5` | `SDD_MODEL_REFINE` | Read, Grep, Glob, Edit | Applies the reviewer's action items to the spec; cannot write code or answer alignment questions |
 | `sdd-implement` | `sdd implement` | `sonnet` (mid) | `claude-sonnet-5` | `SDD_MODEL_IMPLEMENT` | Read, Grep, Glob, Edit, Write, Bash | Implements the single task from the spec according to CLAUDE.md rules |
 | `sdd-verify` | `sdd verify` | `sonnet` (mid) | `claude-sonnet-5` | `SDD_MODEL_VERIFY` | Read, Grep, Glob | Compares the spec against CLAUDE.md in a read-only review |
 | `kotlin-ktlint` | `sdd fix-ktlint` | `haiku` (cheapest) | `claude-haiku-4.5` | `SDD_MODEL_KTLINT` | Read, Grep, Glob, Edit | Fixes ktlint style/format violations (mechanically) |
@@ -354,8 +453,9 @@ of the backend — whichever backend is selected, a set `SDD_MODEL_*` value wins
 default in the table is used:
 
 ```bash
-SDD_MODEL_KTLINT=haiku ./scripts/sdd fix-ktlint
-SDD_MODEL_VERIFY=opus  ./scripts/sdd verify <spec>
+SDD_MODEL_KTLINT=haiku   ./scripts/sdd fix-ktlint
+SDD_MODEL_VERIFY=opus    ./scripts/sdd verify <spec>
+SDD_MODEL_CRITIQUE=gpt-4o ./scripts/sdd critique <spec>   # cross-family review
 ```
 
 On the Claude side, aliases (`opus` / `sonnet` / `haiku`) or a full model ID
@@ -401,6 +501,7 @@ When you enter `claude` from the terminal:
 
 ```
 /sdd-align      specs/features/001-x/spec.md
+/sdd-critique   specs/features/001-x/spec.md
 /sdd-verify     specs/features/001-x/spec.md
 /sdd-implement  specs/features/001-x/spec.md T1
 /sdd-fix-ktlint app:ktlint
@@ -444,3 +545,10 @@ must be added, add it to CLAUDE.md and keep CLAUDE.md limited to imports and Cla
 - Writing specs adds overhead. Do not force it for very small tasks.
 - **The alignment gate applies to all types.** All templates contain a `## Open Decisions (Alignment)`
   section, so `start`/`implement` always expects the answers to be filled in.
+- **The critique loop costs tokens.** Each round is one reviewer call plus one executor call, and
+  a satisfied round adds a verify call on top; four rounds can mean nine agent invocations. Lower
+  `--rounds`, or set `SDD_CRITIQUE_VERIFY=0`, on small specs.
+- **The reviewer's score is advisory; verify is the real bar.** A high rubric score does not by
+  itself release the gate — `critique: converged` additionally requires `VERIFY: PASS`.
+- **`critique` is not a substitute for reading the spec.** The loop hardens what is written; it
+  cannot tell you the feature itself is the wrong thing to build.

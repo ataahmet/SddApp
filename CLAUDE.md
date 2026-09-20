@@ -44,8 +44,10 @@ draft ——→ ready ——→ active ——→ done
 
 ```
 align ──→ align-resolve ──→ critique ──→ verify ──→ start
-                              ↑   │
-                              └───┘  max 4 rounds
+                            ↑  │  │
+                            │  │  └─ reviewer satisfied → sdd-verify runs as arbiter
+                            └──┘     FAIL → findings become next round's items
+                                     max 4 rounds
 ```
 
 | Status | Meaning | Branch | Agent action |
@@ -61,7 +63,9 @@ align ──→ align-resolve ──→ critique ──→ verify ──→ star
 **Branch convention:** `main/{task_id}-{task_name}` (e.g., `main/001-biometric-login`, `main/017-token-loop`, `main/003-flow-migration`, `main/…`).
 `: Purpose, Scope, Acceptance Criteria, Test Plan must be filled (`scripts/sdd ready`).
 - **Alignment gate (`ready → active` precondition):** every `**Answer:**` line in the `## Open Decisions (Alignment)` section must be filled and the front matter must read `alignment: resolved` (`scripts/sdd align` → `align-resolve`).
-- **Critique gate (`ready → active` precondition):** the spec must reach `critique: converged` (`scripts/sdd critique`). A reviewer from a **different model family** than the executor scores the spec against a fixed 5-axis rubric and returns severity-tagged action items; the executor applies them and the loop repeats until the score is `>= 6/10` with zero CRITICAL items, or the 4-round cap is hit. Two outcomes stop the loop early and hand control back to you: `needs_user` (the reviewer hit a decision only you can make — the executor is forbidden from answering it) and `max_rounds`. A reviewer finding you disagree with is released deliberately: justify it under "Deviations from CLAUDE.md" and set `critique: skipped`. Specs predating this gate (no `critique:` field) are not blocked.
+- **Critique gate (`ready → active` precondition):** the spec must reach `critique: converged` (`scripts/sdd critique`). A reviewer from a **different model family** than the executor scores the spec against a fixed 5-axis rubric and returns severity-tagged action items; the executor applies them and the loop repeats until the score is `>= 6/10` with zero CRITICAL items, or the 4-round cap is hit. The moment the reviewer is satisfied, `sdd-verify` itself runs as the
+round's final arbiter: the loop exits only on `VERIFY: PASS`, and a FAIL feeds its findings back
+as the next round's action items — so a converged spec has already cleared the verify gate. Two outcomes stop the loop early and hand control back to you: `needs_user` (the reviewer hit a decision only you can make — the executor is forbidden from answering it) and `max_rounds`. A reviewer finding you disagree with is released deliberately: justify it under "Deviations from CLAUDE.md" and set `critique: skipped`. Specs predating this gate (no `critique:` field) are not blocked.
 - **Verify gate (`ready → active` precondition):** the spec must have `verify: passed` (`scripts/sdd verify`). If verify FAILs, stay at this stage. Note that `critique` rewrites the spec, so it resets `verify` to `pending` — run `verify` after `critique`, not before.
 - `ready → active`: `git checkout -b main/{task_id}-{task_name}` → write the `branch:` field, `status: active`.
 - `active → done`: All tasks 🟢, `./gradlew checkCodeQuality assembleDevDebug` green, a line added to the Changelog.
