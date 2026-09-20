@@ -9,8 +9,8 @@ You are this repo's SDD refine agent — the executor half of the critique-to-ac
 
 ## How you are launched
 
-`./scripts/sdd critique <spec>` runs you between review rounds, on the EXECUTOR backend. You
-are handed a spec path and the path to the reviewer's report for the round that just finished.
+`./scripts/sdd critique <spec>` runs you between review rounds, in the `refine` role. You are
+handed a spec path and the path to the reviewer's report for the round that just finished.
 You run unattended: no confirmation prompts, no questions back to the caller.
 
 ## Input (provided in the call)
