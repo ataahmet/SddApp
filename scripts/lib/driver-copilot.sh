@@ -151,6 +151,9 @@ driver_copilot_warn_drift() {
 #            same short names as Claude's subagent naming: sdd-align,
 #            sdd-implement, sdd-verify, kotlin-ktlint).
 #   <mode>: edit      → --allow-tool 'read,search,edit,write'
+#             (when RUN_AGENT_CAPTURE=1, adds `-s --log-level none` and tees
+#              combined stdout/stderr into $RUN_AGENT_OUTPUT, same contract as
+#              driver-claude.sh's captured edit branch)
 #           full      → --allow-tool 'read,search,edit,write,shell' (the
 #             `implement` path; D4 — an explicit list, never --allow-all-tools)
 #           readonly  → --allow-tool 'read,search' --deny-tool 'write,shell'
@@ -180,7 +183,13 @@ driver_copilot_run_agent() {
 
   case "$mode" in
     edit)
-      ( cd "$ROOT" && "${cmd[@]}" ) || true
+      if [ "${RUN_AGENT_CAPTURE:-0}" = "1" ]; then
+        cmd+=(-s --log-level none)
+        RUN_AGENT_OUTPUT="$(mktemp)"
+        ( cd "$ROOT" && "${cmd[@]}" ) 2>&1 | tee "$RUN_AGENT_OUTPUT" || true
+      else
+        ( cd "$ROOT" && "${cmd[@]}" ) || true
+      fi
       ;;
     full)
       ( cd "$ROOT" && "${cmd[@]}" ) || true

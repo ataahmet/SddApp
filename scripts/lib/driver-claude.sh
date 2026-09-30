@@ -19,6 +19,10 @@ driver_claude_available() {
 #   subagent inside <prompt>) but is threaded through so a future driver
 #   (e.g. Copilot CLI's `--agent`) can use it without changing call sites.
 #   <mode>: edit      → --permission-mode acceptEdits
+#             (when RUN_AGENT_CAPTURE=1, also tees combined stdout/stderr into
+#              $RUN_AGENT_OUTPUT so the caller can keep the agent's report,
+#              e.g. the sdd-refine report in the critique loop; the exit status
+#              is still swallowed, as for a plain edit run)
 #           full      → --permission-mode bypassPermissions
 #           readonly  → --permission-mode dontAsk --allowedTools "Task,Read,Grep,Glob"
 #             (also tees combined stdout/stderr into $RUN_AGENT_OUTPUT for
@@ -27,9 +31,16 @@ driver_claude_run_agent() {
   local agent="$1" mode="$2" model="$3" prompt="$4"
   case "$mode" in
     edit)
-      ( cd "$ROOT" && claude -p "$prompt" \
-        --model "$model" \
-        --permission-mode acceptEdits ) || true
+      if [ "${RUN_AGENT_CAPTURE:-0}" = "1" ]; then
+        RUN_AGENT_OUTPUT="$(mktemp)"
+        ( cd "$ROOT" && claude -p "$prompt" \
+          --model "$model" \
+          --permission-mode acceptEdits ) 2>&1 | tee "$RUN_AGENT_OUTPUT" || true
+      else
+        ( cd "$ROOT" && claude -p "$prompt" \
+          --model "$model" \
+          --permission-mode acceptEdits ) || true
+      fi
       ;;
     full)
       ( cd "$ROOT" && claude -p "$prompt" \

@@ -67,6 +67,25 @@ asking a question", not "nothing obviously wrong".
   The executor is explicitly forbidden from answering them, so flagging one halts the loop
   and returns control to the user. Use this rather than guessing what the user meant.
 
+## What the executor can and cannot change
+
+The executor (`sdd-refine`) edits the spec **body** only. It is forbidden from:
+
+- filling in or rewriting any `- **Answer:**` line in `## Open Decisions (Alignment)` — those
+  are the user's decisions, even when the current answer is terse, off-topic or non-responsive;
+- editing the front matter (`target_version`, `status`, `alignment`, …);
+- editing CLAUDE.md, the templates, anything under `scripts/`, or production code.
+
+So any item whose fix can only live in one of those places is **`NEEDS_USER` — never
+CRITICAL, MAJOR or MINOR** — however mechanical it looks, and even when you can write the exact
+replacement text. Tagging it MAJOR does not get it fixed: the executor must skip it, the next
+round re-raises it, and the loop burns every remaining round on an item nobody in it may
+touch. A non-responsive or ambiguous alignment answer is the typical case: the fix is a new
+answer, and only the user writes answers.
+
+Put these under `## Needs user decision` with the replacement you recommend, so the user can
+accept it with one edit.
+
 Do not inflate severity to look thorough, and do not deflate it to be agreeable. A round that
 reports `CRITICAL=0` when a contract is genuinely missing is worse than useless — the loop
 will converge on a broken spec.
@@ -84,9 +103,16 @@ CRITIQUE: NEEDS_USER=<n>
 CRITIQUE: VERDICT=<CONVERGED|REVISE|NEEDS_USER>
 ```
 
-`VERDICT` is `NEEDS_USER` when `NEEDS_USER>0`, `CONVERGED` when `SCORE>=6` and `CRITICAL=0`,
-otherwise `REVISE`. The script re-derives convergence itself, so a mismatch between your
-verdict and your counts is a bug in your report.
+`VERDICT` is:
+
+- `NEEDS_USER` when `NEEDS_USER>0`;
+- `CONVERGED` when `SCORE` is at or above the threshold stated in your prompt (6 if none is
+  stated) **and** `CRITICAL=0` **and** `MAJOR=0`;
+- otherwise `REVISE`.
+
+A spec with an open MAJOR item is never `CONVERGED` — the loop sends it back to the executor.
+The script re-derives the verdict from your counts and records its own in the spec's Critique
+Log; a mismatch between your verdict and your counts is logged as a bug in your report.
 
 After the header:
 
@@ -98,9 +124,13 @@ After the header:
    The third part is an instruction the executor can act on without asking you anything. Write
    "add `error: ApiError?` to `LoginResponse` and a `LoginViewEntity.Error` state" — not
    "clarify error handling".
+
+   Keep the bold location **stable** for the same issue across rounds (always `**§9 Q3**`,
+   not `**§9 Q3**` one round and `**Alignment Q3**` the next): the script compares the
+   locations of CRITICAL/MAJOR items between rounds to detect items that are not moving.
 3. `## Needs user decision` — only if `NEEDS_USER>0`. One bullet per decision, phrased as a
-   question with the options you can see, so the user can answer it in the spec's
-   `## Open Decisions (Alignment)` section.
+   question with the options you can see — or, for an answer line or front-matter field, the
+   exact replacement you recommend — so the user can settle it in one edit.
 
 ## Constraints
 

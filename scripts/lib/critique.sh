@@ -15,7 +15,24 @@
 #   artifact  = specs/**/spec.md (already aligned, answers filled by the user)
 #   reviewer  = .claude/agents/sdd-critique.md   — read-only, independent
 #   executor  = .claude/agents/sdd-refine.md     — edits the spec only
-#   ledger    = <spec-dir>/critique/round-N.md + the spec's '## Critique Log'
+#   ledger    = <spec-dir>/critique/round-N.md         (reviewer report)
+#               <spec-dir>/critique/round-N-verify.md  (in-loop verify gate, when it runs)
+#               <spec-dir>/critique/round-N-refine.md  (executor report)
+#               + one row per step in the spec's '## Critique Log'
+#
+# Stop conditions besides convergence and the round cap — all three end in
+# 'critique: needs_user', because each means the loop can no longer make
+# progress without the user:
+#   - the reviewer reports NEEDS_USER>0;
+#   - the executor reports REFINE: USER_OWNED>0 — an item whose fix can only
+#     live in an '**Answer:**' line or the front matter, which the executor may
+#     not touch (the reviewer sometimes tags these MAJOR/MINOR instead);
+#   - a stall: a CRITICAL/MAJOR item at the same location comes back after the
+#     executor's turn while the score does not improve, or survives three
+#     consecutive rounds.
+#
+# The Critique Log records the SCRIPT's verdict, re-derived from the reviewer's
+# counts, not the verdict line the reviewer printed; a mismatch is warned about.
 #
 # Cross-family separation is a MODEL-level concern here, not a backend-level
 # one — exactly as in ARIS, where executor and reviewer both run under one CLI
@@ -118,9 +135,15 @@ critique_log_ensure() { # <spec>
 }
 
 # Appends one row to the end of the Critique Log table (chronological order).
+# <score> is an integer (rendered as N/10) or any other text, rendered as-is
+# (e.g. "-" for an executor row that has no score).
 critique_log_append() { # <spec> <round> <score> <critical> <major> <verdict> <report-rel>
-  local spec="$1" row
-  row="| $2 | $3/10 | $4 | $5 | $6 | \`$7\` |"
+  local spec="$1" row score_cell
+  case "$3" in
+    ''|*[!0-9]*) score_cell="$3" ;;
+    *)           score_cell="$3/10" ;;
+  esac
+  row="| $2 | $score_cell | $4 | $5 | $6 | \`$7\` |"
   awk -v row="$row" '
     BEGIN { insec=0; sep=0; done=0 }
     {
@@ -160,6 +183,50 @@ critique_score() { # <output-file>  → integer 0-10, empty when unparseable
   printf '%s' "${v%%/*}"
 }
 
+# Verdict derived from the counts alone — the rule the loop actually applies.
+# The reviewer prints its own VERDICT line too; this is what gets recorded.
+critique_derive_verdict() { # <score> <critical> <major> <needs_user> <reviewer-verdict> <threshold>
+  if [ "$4" -gt 0 ] || [ "$5" = "NEEDS_USER" ]; then
+    echo "NEEDS_USER"
+  elif [ "$1" -ge "$6" ] && [ "$2" -eq 0 ] && [ "$3" -eq 0 ]; then
+    echo "CONVERGED"
+  else
+    echo "REVISE"
+  fi
+}
+
+###############################################################################
+# Executor report parsing
+###############################################################################
+# sdd-refine's first lines are machine-readable (see .claude/agents/
+# sdd-refine.md):
+#   REFINE: APPLIED=3
+#   REFINE: USER_OWNED=1
+#   REFINE: UNRESOLVED=0
+
+refine_field() { # <output-file> <field>  → integer, empty when missing
+  local v
+  v="$(grep -oE "REFINE:[[:space:]]*$2=[0-9]+" "$1" | head -1 | sed -E "s|.*$2=||")"
+  printf '%s' "$v"
+}
+
+###############################################################################
+# Stall detection
+###############################################################################
+# The bold location of every CRITICAL/MAJOR action item, one per line, sorted.
+#   - [MAJOR] **§9 Q3** → ...   →   §9 Q3
+critique_blocking_keys() { # <report-file>
+  sed -nE 's/^[[:space:]]*[-*][[:space:]]*\[(CRITICAL|MAJOR)\][[:space:]]*\*\*([^*]+)\*\*.*/\2/p' "$1" \
+    | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//' \
+    | LC_ALL=C sort -u
+}
+
+# Lines present in both sorted key lists.
+critique_keys_common() { # <keys-a> <keys-b>
+  [ -n "$1" ] && [ -n "$2" ] || return 0
+  LC_ALL=C comm -12 <(printf '%s\n' "$1") <(printf '%s\n' "$2")
+}
+
 ###############################################################################
 # In-loop verify gate
 ###############################################################################
@@ -175,21 +242,37 @@ critique_score() { # <output-file>  → integer 0-10, empty when unparseable
 #
 # Writes the agent's raw output to <out-path>. Returns:
 #   0 → VERIFY: PASS
-#   1 → VERIFY: FAIL, or a completed run with no parseable verdict (treated as
-#       FAIL, exactly as cmd_verify does)
+#   1 → VERIFY: FAIL
 #   2 → infrastructure failure: the CLI never produced usable output
+#   3 → the run completed twice without any 'VERIFY:' line. Unlike standalone
+#       'sdd verify', this is NOT folded into FAIL: a report with no verdict
+#       has no findings either, so feeding it to the executor would only burn
+#       a round. `claude -p` returns the wrapper session's reply, which can
+#       summarise the verdict line away — one re-run usually recovers it.
 critique_run_verify_gate() { # <spec> <out-path>
-  local spec="$1" out="$2"
-  if ! run_agent "sdd-verify" "readonly" "verify" \
-    "Use the sdd-verify subagent for spec: $spec
+  local spec="$1" out="$2" attempt
+  for attempt in 1 2; do
+    RUN_AGENT_OUTPUT=""
+    if ! run_agent "sdd-verify" "readonly" "verify" \
+      "Use the sdd-verify subagent for spec: $spec
 Then relay the subagent's verdict line verbatim as YOUR first line of output: either
 'VERIFY: PASS' or 'VERIFY: FAIL', with nothing before it — not a preamble, not a heading.
 Put your summary after that line. This line is parsed by a script; omitting it fails the run."; then
-    rm -f "${RUN_AGENT_OUTPUT:-}"
-    return 2
-  fi
-  mv "$RUN_AGENT_OUTPUT" "$out"
-  grep -qE 'VERIFY:[[:space:]]*PASS' "$out"
+      rm -f "${RUN_AGENT_OUTPUT:-}"
+      return 2
+    fi
+    mv "$RUN_AGENT_OUTPUT" "$out"
+    if grep -qE 'VERIFY:[[:space:]]*PASS' "$out"; then
+      return 0
+    fi
+    if grep -qE 'VERIFY:[[:space:]]*FAIL' "$out"; then
+      return 1
+    fi
+    if [ "$attempt" -eq 1 ]; then
+      echo "  ⚠ verify completed without a 'VERIFY:' line — re-running it once ..." >&2
+    fi
+  done
+  return 3
 }
 
 ###############################################################################
@@ -208,7 +291,7 @@ require_critique_converged() { # <spec>
   case "$flag" in
     converged) return 0 ;;
     needs_user)
-      echo "✗ critique is 'needs_user' — the reviewer raised items only you can decide."
+      echo "✗ critique is 'needs_user' — the loop stopped on items only you can change or decide."
       echo "  Read the last report under $(dirname "$spec")/critique/, update the spec, then re-run:"
       echo "    ./scripts/sdd critique $spec"
       return 1
@@ -289,14 +372,15 @@ cmd_critique() {
   echo "→ Critique-to-action loop  ($backend)"
   echo "    reviewer : $review_model   ($(critique_model_family "$review_model"))"
   echo "    executor : $exec_model   ($(critique_model_family "$exec_model"))"
-  echo "    rounds   : max $rounds        threshold: >= $threshold/10 and 0 critical"
+  echo "    rounds   : max $rounds        threshold: >= $threshold/10, 0 critical, 0 major"
   echo "    context  : $context           scope: $scope"
   echo "    exit gate: reviewer rubric$([ "${SDD_CRITIQUE_VERIFY:-1}" = "1" ] && echo " + sdd-verify PASS" || echo " only (SDD_CRITIQUE_VERIFY=0)")"
   critique_warn_same_family "$review_model" "$exec_model"
   echo
 
   local round=1 score="" critical="" major="" needs_user="" verdict="" outcome="max_rounds" last_score=0
-  local verify_passed=0
+  local verify_passed=0 base_verdict="" script_verdict="" stop_reason="" stop_report=""
+  local keys="" prev_keys="" prev2_keys="" prev_score="" stall_items="" repeated=""
   while [ "$round" -le "$rounds" ]; do
     echo "════════════════ round $round / $rounds ════════════════"
 
@@ -309,7 +393,8 @@ cmd_critique() {
     local prior_block=""
     if [ "$context" = "cross-round" ] && [ "$round" -gt 1 ]; then
       prior_block="
-This is a CROSS-ROUND review. Your own earlier reports for this spec are at:
+This is a CROSS-ROUND review. Earlier reports for this spec (yours as round-N.md, the
+executor's as round-N-refine.md, the verify gate's as round-N-verify.md) are at:
 $(ls -1 "$report_dir"/round-*.md 2>/dev/null | sed 's|^|  |')
 Read them and state explicitly, per earlier item, whether it is now resolved."
     fi
@@ -324,11 +409,16 @@ repository actually contains, and report drift as an action item."
     local review_prompt="Use the sdd-critique subagent to review spec: $spec
 $scope_block$prior_block
 
+Convergence bar for this run: SCORE >= $threshold/10 with CRITICAL=0 and MAJOR=0.
+The executor cannot edit '**Answer:**' lines or the front matter: any item whose fix lives
+there is NEEDS_USER, never CRITICAL, MAJOR or MINOR.
+
 Then relay the subagent's machine-readable header verbatim as YOUR first lines of output —
 the five 'CRITIQUE:' lines, nothing before them, no preamble and no heading. Put the rest of
 the report after them. These lines are parsed by a script; omitting them fails the run."
 
     local review_out
+    RUN_AGENT_OUTPUT=""
     if ! run_agent "sdd-critique" "readonly" "critique" "$review_prompt"; then
       rm -f "${RUN_AGENT_OUTPUT:-}"
       echo
@@ -366,26 +456,62 @@ the report after them. These lines are parsed by a script; omitting them fails t
     } > "$report"
     rm -f "$review_out"
 
-    critique_log_append "$spec" "$round" "$score" "$critical" "$major" "$verdict" \
+    ###########################################################################
+    # Verdict — re-derived from the counts; the reviewer's own line is advisory.
+    ###########################################################################
+    base_verdict="$(critique_derive_verdict "$score" "$critical" "$major" "$needs_user" "$verdict" "$threshold")"
+    if [ "$verdict" != "$base_verdict" ]; then
+      echo "  ⚠ reviewer printed VERDICT=$verdict, but its own counts give $base_verdict — recording $base_verdict." >&2
+    fi
+
+    ###########################################################################
+    # Stall check — a blocking item the executor already had a turn at.
+    ###########################################################################
+    keys="$(critique_blocking_keys "$report")"
+    stall_items=""
+    if [ "$base_verdict" = "REVISE" ] && [ "$round" -gt 1 ]; then
+      repeated="$(critique_keys_common "$keys" "$prev_keys")"
+      if [ -n "$repeated" ] && [ -n "$prev_score" ] && [ "$score" -le "$prev_score" ]; then
+        stall_items="$repeated"
+      elif [ -n "$repeated" ] && [ "$round" -gt 2 ]; then
+        stall_items="$(critique_keys_common "$repeated" "$prev2_keys")"
+      fi
+    fi
+    script_verdict="$base_verdict"
+    [ -n "$stall_items" ] && script_verdict="STALLED"
+
+    critique_log_append "$spec" "$round" "$score" "$critical" "$major" "$script_verdict" \
       "critique/round-$round.md"
     fm_upsert "$spec" critique_rounds "$round"
     fm_upsert "$spec" critique_score "$score"
     fm_set "$spec" updated "$(today)"
 
     echo
-    echo "  score=$score/10  critical=$critical  major=$major  verdict=$verdict"
+    echo "  score=$score/10  critical=$critical  major=$major  verdict=$script_verdict"
     echo "  report → ${report#$ROOT/}"
 
     ###########################################################################
     # Step 5 — convergence check (runs BEFORE any revision, as in ARIS).
     ###########################################################################
-    if [ "$needs_user" -gt 0 ] || [ "$verdict" = "NEEDS_USER" ]; then
+    if [ "$script_verdict" = "NEEDS_USER" ]; then
       # Hard stop. The refine agent must never invent an answer to a decision
       # the user owns — that is the whole point of the align/align-resolve
       # split this repo already enforces.
-      outcome="needs_user"
+      outcome="needs_user"; stop_reason="reviewer"; stop_report="$report"
       echo
       echo "⏸  The reviewer raised $needs_user item(s) that require YOUR decision."
+      break
+    fi
+
+    if [ "$script_verdict" = "STALLED" ]; then
+      # Another round would only re-raise the same items: whatever the executor
+      # did last turn did not move them, usually because their fix lives in an
+      # answer line or the front matter and the reviewer tagged them MAJOR.
+      outcome="needs_user"; stop_reason="stalled"; stop_report="$report"
+      echo
+      echo "⏸  Stalled — these blocking item(s) came back after the executor's turn:"
+      printf '%s\n' "$stall_items" | sed 's/^/     · /'
+      echo "   Another round would re-raise them; they need your edit or your decision."
       break
     fi
 
@@ -394,7 +520,7 @@ the report after them. These lines are parsed by a script; omitting them fails t
     # never ran on the satisfied round and those items stayed in the report
     # instead of the spec — where 'sdd verify' then found them.
     local gate_report="$report" gate_kind="critique"
-    if [ "$score" -ge "$threshold" ] && [ "$critical" -eq 0 ] && [ "$major" -eq 0 ]; then
+    if [ "$script_verdict" = "CONVERGED" ]; then
       if [ "${SDD_CRITIQUE_VERIFY:-1}" != "1" ]; then
         outcome="converged"
         echo
@@ -416,6 +542,17 @@ the report after them. These lines are parsed by a script; omitting them fails t
         echo
         echo "✗ The verify gate could not run (CLI failed before producing output)." \
              "Front matter left at 'pending'; fix the CLI and re-run 'sdd critique'." >&2
+        fm_upsert "$spec" critique "failed"
+        exit 1
+      fi
+
+      if [ "$vrc" -eq 3 ]; then
+        critique_log_append "$spec" "$round v" "$score" "-" "-" "VERIFY:NONE" \
+          "critique/round-$round-verify.md"
+        echo
+        echo "✗ The verify gate ran twice without printing a 'VERIFY:' line — its verdict is" \
+             "unknown, which is not the same as FAIL. Read ${vout#$ROOT/} and re-run" \
+             "'sdd critique'." >&2
         fm_upsert "$spec" critique "failed"
         exit 1
       fi
@@ -453,14 +590,22 @@ the report after them. These lines are parsed by a script; omitting them fails t
       break
     fi
 
+    # Remembered for the next round's stall check. Only reviewer rounds carry
+    # blocking keys; after a verify FAIL they are empty, so no stall is claimed.
+    prev2_keys="$prev_keys"; prev_keys="$keys"; prev_score="$score"
+
     ###########################################################################
     # Step 3-4 — executor addresses the action items.
     ###########################################################################
+    local refine_contract="
+Start your output with the three 'REFINE:' header lines defined in your agent file. An item
+whose fix is an '**Answer:**' line or a front-matter field is USER_OWNED whatever its severity:
+skip it, count it, and list it with the recommended replacement under '## User-owned'."
+    local refine_prompt
     echo
     if [ "$gate_kind" = "verify" ]; then
       echo "→ Applying verify findings with sdd-refine ($exec_model) ..."
-      run_agent "sdd-refine" "edit" "refine" \
-        "Use the sdd-refine subagent to resolve a FAILED verify gate.
+      refine_prompt="Use the sdd-refine subagent to resolve a FAILED verify gate.
 
 ## Spec
 $spec
@@ -470,13 +615,13 @@ $gate_report
 
 The spec satisfied the review rubric but 'sdd verify' still FAILED. Treat every contradiction,
 ambiguity and open question the report names as a CRITICAL item and resolve it in the spec. Do
-NOT answer any '**Answer:**' line in '## Open Decisions (Alignment)' yourself — if the report
-names a decision the user owns, leave it and say so in your report. Touch the spec only; write
-no production code."
+NOT answer or rewrite any '**Answer:**' line in '## Open Decisions (Alignment)' yourself — if
+the report names a decision the user owns, count it as USER_OWNED. Touch the spec only; write
+no production code.
+$refine_contract"
     else
       echo "→ Applying action items with sdd-refine ($exec_model) ..."
-      run_agent "sdd-refine" "edit" "refine" \
-        "Use the sdd-refine subagent to apply the reviewer's action items.
+      refine_prompt="Use the sdd-refine subagent to apply the reviewer's action items.
 
 ## Spec
 $spec
@@ -484,9 +629,53 @@ $spec
 ## Reviewer report (round $round)
 $gate_report
 
-Apply every CRITICAL and MAJOR item to the spec. Do NOT answer any '**Answer:**' line in
-'## Open Decisions (Alignment)' yourself — if an item needs a decision the user owns, leave it
-and say so in your report. Touch the spec only; write no production code."
+Apply every CRITICAL and MAJOR item to the spec. Do NOT answer or rewrite any '**Answer:**'
+line in '## Open Decisions (Alignment)' yourself — if an item needs a decision the user owns,
+count it as USER_OWNED. Touch the spec only; write no production code.
+$refine_contract"
+    fi
+
+    # Capture the executor's report (drivers tee edit-mode output into
+    # $RUN_AGENT_OUTPUT when RUN_AGENT_CAPTURE=1) so it lands in the ledger
+    # instead of scrolling away in the terminal.
+    RUN_AGENT_OUTPUT=""
+    RUN_AGENT_CAPTURE=1
+    run_agent "sdd-refine" "edit" "refine" "$refine_prompt"
+    RUN_AGENT_CAPTURE=0
+
+    local refine_report="$report_dir/round-$round-refine.md"
+    {
+      echo "<!-- generated by ./scripts/sdd critique — round $round refine — $(today) -->"
+      echo "<!-- executor model: $exec_model | input: ${gate_report#$ROOT/} -->"
+      echo
+      if [ -n "${RUN_AGENT_OUTPUT:-}" ] && [ -f "$RUN_AGENT_OUTPUT" ]; then
+        cat "$RUN_AGENT_OUTPUT"
+      else
+        echo "(no executor output was captured)"
+      fi
+    } > "$refine_report"
+    rm -f "${RUN_AGENT_OUTPUT:-}"
+
+    local applied user_owned unresolved
+    applied="$(refine_field "$refine_report" APPLIED)"
+    user_owned="$(refine_field "$refine_report" USER_OWNED)"
+    unresolved="$(refine_field "$refine_report" UNRESOLVED)"
+    if [ -z "$user_owned" ]; then
+      echo "  ⚠ sdd-refine printed no 'REFINE:' header — treating it as USER_OWNED=0;" \
+           "the stall check still applies next round." >&2
+    fi
+    critique_log_append "$spec" "$round r" "-" "-" "-" \
+      "APPLIED=${applied:-?} USER_OWNED=${user_owned:-?} UNRESOLVED=${unresolved:-?}" \
+      "critique/round-$round-refine.md"
+    echo "  applied=${applied:-?}  user_owned=${user_owned:-?}  unresolved=${unresolved:-?}"
+    echo "  report → ${refine_report#$ROOT/}"
+
+    if [ "${user_owned:-0}" -gt 0 ]; then
+      outcome="needs_user"; stop_reason="refine"; stop_report="$refine_report"
+      echo
+      echo "⏸  The executor skipped $user_owned item(s) that only you can change" \
+           "(an alignment answer or a front-matter field)."
+      break
     fi
 
     fm_set "$spec" updated "$(today)"
@@ -517,9 +706,24 @@ and say so in your report. Touch the spec only; write no production code."
       ;;
     needs_user)
       echo "✗ critique: needs_user  (score $last_score/10)"
-      echo "  Read: ${report_dir#$ROOT/}/round-$round.md"
-      echo "  Answer the flagged decisions in the spec, then re-run:"
+      echo "  Read: ${stop_report#$ROOT/}"
+      case "$stop_reason" in
+        refine)
+          echo "  Apply the items under '## User-owned' yourself — each is an alignment answer or a"
+          echo "  front-matter field the executor may not touch — then re-run:"
+          ;;
+        stalled)
+          echo "  The listed item(s) did not move after the executor's turn. Fix them by hand (an"
+          echo "  alignment answer or a front-matter field is the usual culprit), or — if the reviewer"
+          echo "  is wrong — justify them under '## Deviations from CLAUDE.md' and set"
+          echo "  'critique: skipped'. Otherwise re-run:"
+          ;;
+        *)
+          echo "  Answer the flagged decisions in the spec, then re-run:"
+          ;;
+      esac
       echo "    ./scripts/sdd critique $spec"
+      echo "  Edit the answer lines by hand — re-running 'sdd align' would clear every answer."
       exit 1
       ;;
     *)

@@ -226,16 +226,24 @@ spec — `alignment: resolved` is a precondition — and each round does four th
    items, so the same zero-tolerance bar that blocks `start` is enforced *inside* the loop
    rather than discovered after it.
 3. **Action.** The `sdd-refine` agent applies the items to the spec. It has no `Write` or `Bash`
-   tool and is explicitly forbidden from filling in any `- **Answer:**` line — alignment answers
-   belong to you, not the agent.
+   tool and is explicitly forbidden from filling in or rewriting any `- **Answer:**` line and
+   from editing the front matter — alignment answers and front-matter fields belong to you, not
+   the agent. It reports what it applied, and how many items it had to skip because they live
+   in one of those places (`REFINE: USER_OWNED=n`); any such item stops the loop.
 4. **Convergence check.** Exit when score ≥ threshold, zero CRITICAL, zero MAJOR, and verify
-   PASSes; otherwise run another round, up to the cap.
+   PASSes; otherwise run another round, up to the cap. A blocking item that comes back at the
+   same location after the executor's turn without the score improving (or that survives
+   three rounds) is a **stall** and also stops the loop — another round would only re-raise it.
+
+The verdict in the Critique Log is the **script's**, re-derived from the reviewer's counts. The
+reviewer also prints its own `VERDICT` line; when the two disagree (say `CONVERGED` with
+`MAJOR=2`), the loop warns and records its own.
 
 ```
 → Critique-to-action loop  (claude)
     reviewer : gpt-4o   (gpt)
     executor : sonnet   (claude)
-    rounds   : max 4        threshold: >= 6/10 and 0 critical
+    rounds   : max 4        threshold: >= 6/10, 0 critical, 0 major
     context  : fresh           scope: spec-only
     exit gate: reviewer rubric + sdd-verify PASS
 
@@ -255,14 +263,18 @@ spec — `alignment: resolved` is a precondition — and each round does four th
 | Value | Meaning | What to do |
 |-------|---------|------------|
 | `converged` | Rubric cleared **and** verify PASSed | `verify: passed` is written too → go straight to `sdd start` |
-| `needs_user` | The reviewer hit a decision only you can make | Answer it in `## Open Decisions (Alignment)`, re-run `sdd critique` |
+| `needs_user` | No agent in the loop may make the next change: the reviewer flagged a decision you own, the executor skipped an answer-line / front-matter item, or an item stalled | Read the report the loop names (`round-N.md` or `round-N-refine.md`), edit the answer lines / front matter by hand, re-run `sdd critique`. Do **not** re-run `sdd align` — it clears every answer |
 | `max_rounds` | Cap reached without convergence | Read the last report (and `round-N-verify.md`), fix by hand, re-run |
+| `failed` | The reviewer or the in-loop verify could not produce a usable result (CLI failure, or verify printed no `VERIFY:` line twice) | Fix the CLI / read `round-N-verify.md`, re-run |
 | `skipped` | You deliberately released the gate | Justify it under "Deviations from CLAUDE.md" |
 | *(absent)* | Spec predates this gate | Not blocked — backwards compatible |
 
-**Ledger.** Every round writes `<spec-dir>/critique/round-N.md`, every arbitration writes
-`round-N-verify.md`, and a summary row per round is appended to the spec's `## Critique Log`
-table. Rejected directions stay on the record, so a later run does not re-propose them.
+**Ledger.** Every round writes `<spec-dir>/critique/round-N.md` (reviewer), every arbitration
+writes `round-N-verify.md`, and every executor turn writes `round-N-refine.md`. The spec's
+`## Critique Log` gets one row per step: `N` for the reviewer, `N v` for the verify gate and
+`N r` for the executor (`APPLIED= USER_OWNED= UNRESOLVED=`). A standalone `sdd verify` keeps
+its report in `<spec-dir>/verify/verify-<timestamp>.md`. Rejected directions stay on the
+record, so a later run does not re-propose them.
 
 **Cross-family review.** ARIS's first design principle is that reviewer and executor should not
 share a model family — a same-family pair shares its blind spots. Here that is a **model-level**
@@ -297,7 +309,8 @@ Make it the default by changing the `critique:claude` row in `model_default` ins
 
 The `sdd-verify` agent runs in read-only mode (`--tools "Read,Grep,Glob"`), compares the spec
 against CLAUDE.md, and prints `VERIFY: PASS` / `VERIFY: FAIL` on the first line. The script
-captures this verdict and writes `verify: passed` / `verify: failed` to the front matter.
+captures this verdict, writes `verify: passed` / `verify: failed` to the front matter, and keeps
+the full report in `<spec-dir>/verify/verify-<timestamp>.md`.
 
 **`verify: passed` is required before `start` and `implement` run.** If the agent finds a
 contradiction or even a minor ambiguity, it returns FAIL; clarify the issue and rerun. If
