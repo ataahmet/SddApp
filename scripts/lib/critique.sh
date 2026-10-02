@@ -134,6 +134,41 @@ critique_log_ensure() { # <spec>
   fi
 }
 
+# Moves an earlier run's reports out of the way before a new run starts.
+# Every run numbers its rounds from 1, so without this a re-run overwrites
+# round-N.md files that older Critique Log rows still point at, and leaves the
+# higher-numbered files of a longer earlier run lying around (where the
+# cross-round reviewer would read them as its own). The old rows are repointed
+# at the archive and a separator row marks where the new run begins.
+critique_archive_previous_run() { # <spec> <report-dir>
+  local spec="$1" report_dir="$2" stamp archive rel f moved=0
+  CRITIQUE_ARCHIVED=""
+  for f in "$report_dir"/round-*.md; do
+    [ -e "$f" ] && { moved=1; break; }
+  done
+  [ "$moved" -eq 1 ] || return 0
+
+  stamp="$(date +%Y%m%d-%H%M%S)"
+  archive="$report_dir/run-$stamp"
+  rel="critique/run-$stamp"
+  mkdir -p "$archive"
+  mv "$report_dir"/round-*.md "$archive"/
+
+  awk -v from='`critique/round-' -v to="\`$rel/round-" '
+    /^#{1,6}[[:space:]].*[Cc]ritique [Ll]og/ { insec=1; print; next }
+    insec && /^#{1,6}[[:space:]]/ { insec=0 }
+    insec && /^\|/ {
+      while ((i = index($0, from)) > 0) {
+        $0 = substr($0, 1, i - 1) to substr($0, i + length(from))
+      }
+    }
+    { print }
+  ' "$spec" > "$spec.tmp" && mv "$spec.tmp" "$spec"
+
+  critique_log_append "$spec" "new run" "-" "-" "-" "earlier reports archived" "$rel/"
+  CRITIQUE_ARCHIVED="$rel/"
+}
+
 # Appends one row to the end of the Critique Log table (chronological order).
 # <score> is an integer (rendered as N/10) or any other text, rendered as-is
 # (e.g. "-" for an executor row that has no score).
@@ -253,11 +288,7 @@ critique_run_verify_gate() { # <spec> <out-path>
   local spec="$1" out="$2" attempt
   for attempt in 1 2; do
     RUN_AGENT_OUTPUT=""
-    if ! run_agent "sdd-verify" "readonly" "verify" \
-      "Use the sdd-verify subagent for spec: $spec
-Then relay the subagent's verdict line verbatim as YOUR first line of output: either
-'VERIFY: PASS' or 'VERIFY: FAIL', with nothing before it — not a preamble, not a heading.
-Put your summary after that line. This line is parsed by a script; omitting it fails the run."; then
+    if ! run_agent "sdd-verify" "readonly" "verify" "$(verify_prompt "$spec" loop)"; then
       rm -f "${RUN_AGENT_OUTPUT:-}"
       return 2
     fi
@@ -362,6 +393,7 @@ cmd_critique() {
   mkdir -p "$report_dir"
 
   critique_log_ensure "$spec"
+  critique_archive_previous_run "$spec" "$report_dir"
   fm_upsert "$spec" critique "pending"
   fm_upsert "$spec" critique_score "~"
   fm_upsert "$spec" critique_rounds "0"
@@ -375,6 +407,7 @@ cmd_critique() {
   echo "    rounds   : max $rounds        threshold: >= $threshold/10, 0 critical, 0 major"
   echo "    context  : $context           scope: $scope"
   echo "    exit gate: reviewer rubric$([ "${SDD_CRITIQUE_VERIFY:-1}" = "1" ] && echo " + sdd-verify PASS" || echo " only (SDD_CRITIQUE_VERIFY=0)")"
+  [ -n "${CRITIQUE_ARCHIVED:-}" ] && echo "    archive  : earlier run's reports → $CRITIQUE_ARCHIVED"
   critique_warn_same_family "$review_model" "$exec_model"
   echo
 
@@ -412,6 +445,9 @@ $scope_block$prior_block
 Convergence bar for this run: SCORE >= $threshold/10 with CRITICAL=0 and MAJOR=0.
 The executor cannot edit '**Answer:**' lines or the front matter: any item whose fix lives
 there is NEEDS_USER, never CRITICAL, MAJOR or MINOR.
+Review the spec's CONTENT only: the script-owned front-matter fields (status, alignment,
+verify, critique*, updated, ...) and the '## Critique Log' are mid-update while you run and
+are never an action item or a reason to lower the score.
 
 Then relay the subagent's machine-readable header verbatim as YOUR first lines of output —
 the five 'CRITIQUE:' lines, nothing before them, no preamble and no heading. Put the rest of
@@ -547,7 +583,7 @@ the report after them. These lines are parsed by a script; omitting them fails t
       fi
 
       if [ "$vrc" -eq 3 ]; then
-        critique_log_append "$spec" "$round v" "$score" "-" "-" "VERIFY:NONE" \
+        critique_log_append "$spec" "$round v" "-" "-" "-" "VERIFY:NONE" \
           "critique/round-$round-verify.md"
         echo
         echo "✗ The verify gate ran twice without printing a 'VERIFY:' line — its verdict is" \
@@ -558,7 +594,7 @@ the report after them. These lines are parsed by a script; omitting them fails t
       fi
 
       if [ "$vrc" -eq 0 ]; then
-        critique_log_append "$spec" "$round v" "$score" "0" "0" "VERIFY:PASS" \
+        critique_log_append "$spec" "$round v" "-" "-" "-" "VERIFY:PASS" \
           "critique/round-$round-verify.md"
         outcome="converged"
         verify_passed=1
@@ -572,7 +608,7 @@ the report after them. These lines are parsed by a script; omitting them fails t
       # that used to slip through. Its findings become this round's action
       # items, so the next round fixes them instead of the user discovering
       # them after the loop has already declared success.
-      critique_log_append "$spec" "$round v" "$score" "1" "0" "VERIFY:FAIL" \
+      critique_log_append "$spec" "$round v" "-" "-" "-" "VERIFY:FAIL" \
         "critique/round-$round-verify.md"
       gate_report="$vout"
       gate_kind="verify"

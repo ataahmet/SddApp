@@ -276,6 +276,11 @@ writes `round-N-verify.md`, and every executor turn writes `round-N-refine.md`. 
 its report in `<spec-dir>/verify/verify-<timestamp>.md`. Rejected directions stay on the
 record, so a later run does not re-propose them.
 
+Every run numbers its rounds from 1, so a re-run of `sdd critique` first moves the previous
+run's `round-*.md` files into `critique/run-<timestamp>/`, repoints the older Critique Log rows
+at that folder, and adds a `new run` separator row. The cross-round reviewer therefore only
+ever sees the current run's reports.
+
 **Cross-family review.** ARIS's first design principle is that reviewer and executor should not
 share a model family — a same-family pair shares its blind spots. Here that is a **model-level**
 choice resolved by `model_for_role`, so no second CLI is needed:
@@ -311,6 +316,12 @@ The `sdd-verify` agent runs in read-only mode (`--tools "Read,Grep,Glob"`), comp
 against CLAUDE.md, and prints `VERIFY: PASS` / `VERIFY: FAIL` on the first line. The script
 captures this verdict, writes `verify: passed` / `verify: failed` to the front matter, and keeps
 the full report in `<spec-dir>/verify/verify-<timestamp>.md`.
+
+Verify judges the spec's **content** only. The lifecycle fields the script writes (`status`,
+`alignment`, `verify`, `critique*`, `updated`, …) and the `## Critique Log` are out of its
+scope: `sdd start` / `sdd implement` enforce those gates themselves, and inside `sdd critique`
+the front matter reads `critique: pending` by design while verify runs as the arbiter. A verify
+report that FAILs on those fields is a tool bug, not something to fix in the spec.
 
 **`verify: passed` is required before `start` and `implement` run.** If the agent finds a
 contradiction or even a minor ambiguity, it returns FAIL; clarify the issue and rerun. If

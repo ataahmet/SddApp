@@ -72,5 +72,6 @@ as the next round's action items — so a converged spec has already cleared the
 - `* → blocked`: Don't write code; write the reason into `blocked_reason:` and stop.
 **Commit format:** `[{TYPE}-{task_id}] short description` + `Spec: specs/{type}s/{task_id}-{task_name}/spec.md` in the body.
 **Agent rule (non-negotiable):** Do not write code without reading the spec / checking `status`. Do not write code to a `draft`/`blocked` spec.
+**Review scope:** the gates above are enforced by `scripts/sdd`, not by reviewing agents. When `sdd-critique` or `sdd-verify` reviews a spec, the lifecycle front-matter fields (`status`, `branch`, `alignment`, `verify`, `critique*`, `created`, `updated`, `blocked_reason`, `dropped_reason`) and the `## Critique Log` are not spec content: they are mid-update while the review runs and are never a finding.
 
 

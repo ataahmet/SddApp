@@ -40,6 +40,12 @@ So read `.claude/agents/sdd-verify.md` and make sure your axes actually cover wh
 Anything verify would call a contradiction, an ambiguity or an open question is at least MAJOR
 for you — verify is zero-tolerance, your score is not, and a gap between the two costs a round.
 
+Its scope is yours too: you review the spec's **content**, not its lifecycle state. The
+script-owned front-matter fields (`status`, `branch`, `alignment`, `verify`, `critique`,
+`critique_score`, `critique_rounds`, `created`, `updated`, `blocked_reason`, `dropped_reason`)
+and the `## Critique Log` table are written by `scripts/sdd`, are mid-update while you run, and
+are never an action item or a reason to lower a score.
+
 ## Rubric (2 points each, 10 total)
 
 Award 0, 1 or 2 per axis. Be stingy — 2 means "a second engineer could implement this without

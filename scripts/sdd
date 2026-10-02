@@ -752,6 +752,36 @@ cmd_implement() {
   echo "✓ All tasks completed."
 }
 
+# The one prompt both verify call sites send (standalone 'sdd verify' and the
+# in-loop arbiter in scripts/lib/critique.sh), so the scope rule cannot drift
+# between them. The scope paragraph repeats .claude/agents/sdd-verify.md on
+# purpose: the wrapper session relays the subagent, and a verify run that
+# reported the script's own bookkeeping (front matter saying 'critique:
+# pending' while the Critique Log already says CONVERGED) could never pass
+# inside the loop.
+#   <context>: standalone | loop
+verify_prompt() { # <spec> <context>
+  local spec="$1" context="${2:-standalone}" context_block=""
+  if [ "$context" = "loop" ]; then
+    context_block="
+You are running INSIDE 'sdd critique' as this round's final arbiter. The front matter reads
+'critique: pending' and 'verify: pending' by design until the loop has your verdict, and the
+Critique Log may already show this round as CONVERGED. That is expected, not a mismatch."
+  fi
+  cat <<EOF
+Use the sdd-verify subagent for spec: $spec
+Judge the spec's CONTENT against CLAUDE.md only. The lifecycle state written by scripts/sdd —
+the front-matter fields status, branch, alignment, verify, critique, critique_score,
+critique_rounds, created, updated, blocked_reason, dropped_reason, and the '## Critique Log'
+table — is out of scope: its values, and whether they agree with each other, are never a FAIL
+item or a '## Suspicious' item.$context_block
+
+Then relay the subagent's verdict line verbatim as YOUR first line of output: either
+'VERIFY: PASS' or 'VERIFY: FAIL', with nothing before it — not a preamble, not a heading.
+Put your summary after that line. This line is parsed by a script; omitting it fails the run.
+EOF
+}
+
 cmd_verify() {
   local spec="$1"
   [ -f "$spec" ] || { echo "Spec not found: $spec"; exit 1; }
@@ -772,11 +802,7 @@ cmd_verify() {
   # parseable verdict (D5). That case must leave the front matter untouched and
   # exit non-zero, so it must not fall through to the fm_upsert below, and it
   # must not trip `set -e`'s uncontrolled exit before we can report/clean up.
-  if ! run_agent "sdd-verify" "readonly" "verify" \
-    "Use the sdd-verify subagent for spec: $spec
-Then relay the subagent's verdict line verbatim as YOUR first line of output: either
-'VERIFY: PASS' or 'VERIFY: FAIL', with nothing before it — not a preamble, not a heading.
-Put your summary after that line. This line is parsed by a script; omitting it fails the run."; then
+  if ! run_agent "sdd-verify" "readonly" "verify" "$(verify_prompt "$spec" standalone)"; then
     rm -f "${RUN_AGENT_OUTPUT:-}"
     echo
     echo "✗ Verify could not run — the agent CLI failed before producing any output" \
