@@ -151,9 +151,6 @@ driver_copilot_warn_drift() {
 #            same short names as Claude's subagent naming: sdd-align,
 #            sdd-implement, sdd-verify, kotlin-ktlint).
 #   <mode>: edit      → --allow-tool 'read,search,edit,write'
-#             (when RUN_AGENT_CAPTURE=1, adds `-s --log-level none` and tees
-#              combined stdout/stderr into $RUN_AGENT_OUTPUT, same contract as
-#              driver-claude.sh's captured edit branch)
 #           full      → --allow-tool 'read,search,edit,write,shell' (the
 #             `implement` path; D4 — an explicit list, never --allow-all-tools)
 #           readonly  → --allow-tool 'read,search' --deny-tool 'write,shell'
@@ -161,8 +158,7 @@ driver_copilot_warn_drift() {
 #             also tees combined stdout/stderr into $RUN_AGENT_OUTPUT, same
 #             contract as driver-claude.sh's readonly branch.
 #   Every mode gets the deny-list.txt expansion (D3) and a pre-dispatch drift
-#   warning (D7) first, and reads stdin from /dev/null so the agent can never
-#   consume a caller's loop input (see driver-claude.sh).
+#   warning (D7) first.
 driver_copilot_run_agent() {
   local agent="$1" mode="$2" model="$3" prompt="$4"
   local allow_tools
@@ -184,16 +180,10 @@ driver_copilot_run_agent() {
 
   case "$mode" in
     edit)
-      if [ "${RUN_AGENT_CAPTURE:-0}" = "1" ]; then
-        cmd+=(-s --log-level none)
-        RUN_AGENT_OUTPUT="$(mktemp)"
-        ( cd "$ROOT" && "${cmd[@]}" < /dev/null ) 2>&1 | tee "$RUN_AGENT_OUTPUT" || true
-      else
-        ( cd "$ROOT" && "${cmd[@]}" < /dev/null ) || true
-      fi
+      ( cd "$ROOT" && "${cmd[@]}" ) || true
       ;;
     full)
-      ( cd "$ROOT" && "${cmd[@]}" < /dev/null ) || true
+      ( cd "$ROOT" && "${cmd[@]}" ) || true
       ;;
     readonly)
       cmd+=(--deny-tool "write,shell" -s --log-level none)
@@ -204,7 +194,7 @@ driver_copilot_run_agent() {
       # failure apart from a completed run with an unparseable verdict.
       # `set -o pipefail` (scripts/sdd, sourced into this file) makes the
       # pipeline's status the `copilot` process's status even through `tee`.
-      ( cd "$ROOT" && "${cmd[@]}" < /dev/null ) 2>&1 | tee "$RUN_AGENT_OUTPUT"
+      ( cd "$ROOT" && "${cmd[@]}" ) 2>&1 | tee "$RUN_AGENT_OUTPUT"
       ;;
     *)
       echo "driver-copilot: unknown mode '$mode'" >&2

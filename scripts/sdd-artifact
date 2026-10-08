@@ -1,3 +1,4 @@
+
 #!/usr/bin/env bash
 # Build a portable SDD artifact from the repository's canonical SDD files.
 set -euo pipefail
