@@ -5,7 +5,7 @@
 - **Each layer's job in one sentence:** `data` fetches/writes data, `domain` runs the business rule and
   produces Response→ViewEntity, `presentation` only observes the state and binds it to the UI.
 
-## Technology (non-negotiable — verified)
+## Technology (non-negotiable)
 - Kotlin, **Java 17**, `compileSdk 35`, `minSdk 23`, `targetSdk 35`.
 - DI: **Hilt** (Koin forbidden). Async: **RxJava2** (`Single`/`Completable`); **coroutines/suspend/Flow FORBIDDEN**.
 - Network: Retrofit + **Gson** (`@SerializedName`)**;
@@ -40,6 +40,16 @@ draft ——→ ready ——→ active ——→ done
 
 ```
 
+**Gate chain on `ready` (all three must clear before `active`):**
+
+```
+align ──→ align-resolve ──→ critique ──→ verify ──→ start
+                            ↑  │  │
+                            │  │  └─ reviewer satisfied → sdd-verify runs as arbiter
+                            └──┘     FAIL → findings become next round's items
+                                     max 4 rounds
+```
+
 | Status | Meaning | Branch | Agent action |
 |--------|---------|--------|--------------|
 | `draft` | Spec being written, incomplete | none | Complete the mandatory sections → `ready` |
@@ -50,14 +60,18 @@ draft ——→ ready ——→ active ——→ done
 | `dropped` | Cancelled/postponed | – | Fill `dropped_reason:` |
 
 
-**Branch convention:** `main/{task_id}-{task_name}` (e.g., `main/001-biometric-login`, `main/017-token-loop`, `main/003-flow-migration`, `main/…`).
-`: Purpose, Scope, Acceptance Criteria, Test Plan must be filled (`scripts/sdd ready`).
+**Branch convention:** `sdd/{task_id}-{task_name}` (e.g., `sdd/001-biometric-login`, `sdd/017-token-loop`, `sdd/003-flow-migration`). The prefix comes from `SDD_BRANCH_PREFIX` (default `sdd`); it cannot be `main` while a `main` branch exists.
+- **Ready gate (`draft → ready`):** Purpose/Goal, Scope, Acceptance Criteria and Test Plan must be filled before `scripts/sdd ready` runs. The script only writes the status — it does not check the sections yet — so the spec's author owns this gate.
 - **Alignment gate (`ready → active` precondition):** every `**Answer:**` line in the `## Open Decisions (Alignment)` section must be filled and the front matter must read `alignment: resolved` (`scripts/sdd align` → `align-resolve`).
-- **Verify gate (`ready → active` precondition):** the spec must have `verify: passed` (`scripts/sdd verify`). If verify FAILs, stay at this stage.
-- `ready → active`: `git checkout -b main/{task_id}-{task_name}` → write the `branch:` field, `status: active`.
+- **Critique gate (`ready → active` precondition):** the spec must reach `critique: converged` (`scripts/sdd critique`). A reviewer from a **different model family** than the executor scores the spec against a fixed 5-axis rubric and returns severity-tagged action items; the executor applies them and the loop repeats until the score is `>= 6/10` with zero CRITICAL and zero MAJOR items, or the 4-round cap is hit. The moment the reviewer is satisfied, `sdd-verify` itself runs as the
+round's final arbiter: the loop exits only on `VERIFY: PASS`, and a FAIL feeds its findings back
+as the next round's action items — so a converged spec has already cleared the verify gate. Two outcomes stop the loop early and hand control back to you: `needs_user` and `max_rounds`. `needs_user` means no agent in the loop may make the next change: the reviewer flagged a decision only you own, the executor skipped an item whose fix lives in an `**Answer:**` line or the front matter (it may touch neither), or a blocking item stalled across rounds. Edit those lines by hand — never re-run `sdd align` for it, which clears every answer. A reviewer finding you disagree with is released deliberately: justify it under "Deviations from CLAUDE.md" and set `critique: skipped`. Specs predating this gate (no `critique:` field) are not blocked.
+- **Verify gate (`ready → active` precondition):** the spec must have `verify: passed` (`scripts/sdd verify`). If verify FAILs, stay at this stage. Note that `critique` rewrites the spec, so it resets `verify` to `pending` — run `verify` after `critique`, not before.
+- `ready → active`: `git checkout -b sdd/{task_id}-{task_name}` → write the `branch:` field, `status: active`.
 - `active → done`: All tasks 🟢, `./gradlew checkCodeQuality assembleDevDebug` green, a line added to the Changelog.
 - `* → blocked`: Don't write code; write the reason into `blocked_reason:` and stop.
 **Commit format:** `[{TYPE}-{task_id}] short description` + `Spec: specs/{type}s/{task_id}-{task_name}/spec.md` in the body.
 **Agent rule (non-negotiable):** Do not write code without reading the spec / checking `status`. Do not write code to a `draft`/`blocked` spec.
+**Review scope:** the gates above are enforced by `scripts/sdd`, not by reviewing agents. When `sdd-critique` or `sdd-verify` reviews a spec, the lifecycle front-matter fields (`status`, `branch`, `alignment`, `verify`, `critique*`, `created`, `updated`, `blocked_reason`, `dropped_reason`) and the `## Critique Log` are not spec content: they are mid-update while the review runs and are never a finding.
 
 

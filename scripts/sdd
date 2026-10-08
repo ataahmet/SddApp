@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # sdd — Specification-Driven Development CLI
-# Flow: new → ready → align → verify → start(branch) → implement → done
+# Flow: new → ready → align → align-resolve → critique(loop) → verify → start(branch) → implement → done
 # Lifecycle: draft → ready → active → done | blocked | dropped
 # Gate: verify must PASS (no open questions) before implement can run.
-# Details: CLAUDE.md §9 / §9.1, README.md
+# Details: CLAUDE.md §9 / §9.1, SDD-README.md (artifact/sdd-usage.md in the kit repo)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -14,11 +14,29 @@ TEMPLATES="$SPECS/templates"
 source "$ROOT/scripts/lib/driver-claude.sh"
 # shellcheck source=lib/driver-copilot.sh
 source "$ROOT/scripts/lib/driver-copilot.sh"
+# shellcheck source=lib/critique.sh
+source "$ROOT/scripts/lib/critique.sh"
 
 # Agent backend selection: claude | copilot | auto (default). `auto` resolves by
-# binary presence only, claude first — no runtime fallback on auth/quota failure
-# (D6). See specs/refactors/002-copilot-cli-agent-support/spec.md.
+# binary presence only — copilot first, then claude (see resolve_agent_backend) —
+# with no runtime fallback on auth/quota failure (D6). Pin SDD_AGENT when the
+# per-role model table matters: every Copilot role currently runs on 'auto'.
+# See specs/refactors/002-copilot-cli-agent-support/spec.md.
 SDD_AGENT="${SDD_AGENT:-auto}"
+
+# Branch prefix for `sdd start`: branches are <prefix>/{task_id}-{task_name}
+# (CLAUDE.md §9.1). The default is 'sdd', not 'main': git stores branch names as
+# paths under refs/heads/, so 'main/001-x' can never be created while a branch
+# called 'main' exists — which is nearly every repository.
+SDD_BRANCH_PREFIX="${SDD_BRANCH_PREFIX:-sdd}"
+
+# Setup guide named in error messages: 'SDD-README.md' in an installed project,
+# 'artifact/sdd-usage.md' in the kit repository itself (same document).
+if [ -f "$ROOT/SDD-README.md" ]; then
+  SETUP_GUIDE="SDD-README.md"
+else
+  SETUP_GUIDE="artifact/sdd-usage.md"
+fi
 
 # Per-role model selection (premium quota optimisation). Each of these env vars,
 # if set, overrides the role's model on WHICHEVER backend ends up resolved —
@@ -28,6 +46,8 @@ SDD_AGENT="${SDD_AGENT:-auto}"
 #   SDD_MODEL_ALIGN     — strongest  — open decision generation
 #   SDD_MODEL_IMPLEMENT — medium     — code writing
 #   SDD_MODEL_VERIFY    — medium     — read-only inspection
+#   SDD_MODEL_CRITIQUE  — strongest  — adversarial spec review (reviewer half)
+#   SDD_MODEL_REFINE    — medium     — applying review action items (executor half)
 #   SDD_MODEL_KTLINT    — cheapest   — mechanical format fixing
 
 ###############################################################################
@@ -78,15 +98,54 @@ next_id() {
 ###############################################################################
 
 # Read front matter field
+# A trailing '# comment' is not part of the value: the templates document each
+# lifecycle field on its own line ('status: draft   # draft → ready → …') and
+# fm_set keeps that comment when it rewrites the value. Every key read through
+# here is a lifecycle field whose value never contains '#'; agent front matter
+# is read by agent_fm_get instead.
 fm_get() {
-  grep -E "^$2:" "$1" | head -1 | sed -E "s/^$2:[[:space:]]*//; s/[[:space:]]+$//"
+  grep -E "^$2:" "$1" | head -1 \
+    | sed -E "s/^$2:[[:space:]]*//; s/[[:space:]]*#.*$//; s/[[:space:]]+$//"
 }
 
-# Write front matter field (first matching line)
+# In-place sed that works with both BSD sed (macOS) and GNU sed (Linux).
+# `sed -i ''` is BSD-only (GNU sed reads '' as the script) and `sed -i` is
+# GNU-only (BSD sed takes the next argument as a backup suffix), so neither
+# form is portable. Writing to a temp file and moving it over the original is,
+# and it is the same pattern fm_upsert already uses.
+sed_inplace() { # <file> <sed args...>
+  local file="$1"; shift
+  if sed "$@" "$file" > "$file.tmp"; then
+    mv "$file.tmp" "$file"
+  else
+    rm -f "$file.tmp"
+    return 1
+  fi
+}
+
+# Write front matter field (first matching line).
+# Done with awk, not sed: the value and the line's trailing '# comment' are passed
+# as data, so a '|', '&' or backslash in either cannot corrupt the substitution
+# (template comments like '# draft | blocked | dropped' do contain '|'). The
+# comment is preserved — it is the template's own documentation — and only the
+# FIRST matching line is rewritten, so prose further down the spec is untouched.
 fm_set() {
   local file="$1" key="$2" val="$3"
-  # macOS/BSD sed compatible
-  sed -i '' -E "s|^(${key}:)[[:space:]]*.+$|\1 ${val}|" "$file"
+  awk -v k="$key" -v v="$val" '
+    BEGIN { done = 0 }
+    !done && index($0, k ":") == 1 {
+      cmt = ""
+      p = index($0, "#"); if (p > 0) cmt = substr($0, p)
+      line = k ": " v
+      if (cmt != "") {
+        while (length(line) < 25) line = line " "          # template column
+        if (substr(line, length(line), 1) != " ") line = line " "
+        line = line cmt
+      }
+      print line; done = 1; next
+    }
+    { print }
+  ' "$file" > "$file.tmp" && mv "$file.tmp" "$file"
 }
 
 # Add/update front matter field (inserts before closing --- if not found)
@@ -206,6 +265,11 @@ list_tasks() { # <spec>
   grep -oE '^[[:space:]]*-[[:space:]]*\[[ xX]?\][[:space:]]*T[0-9]+' "$1" | grep -oE 'T[0-9]+'
 }
 
+# Tasks whose checkbox is still empty: '- [ ] T3' or '- [] T3', not '- [x] T3'.
+list_open_tasks() { # <spec>
+  { grep -oE '^[[:space:]]*-[[:space:]]*\[ ?\][[:space:]]*T[0-9]+' "$1" || true; } | grep -oE 'T[0-9]+' || true
+}
+
 ###############################################################################
 # Model roles (per-driver role→model tables, §3 of spec 002)
 ###############################################################################
@@ -219,6 +283,8 @@ model_default() { # <role> <backend>
   local role="$1" backend="$2"
   case "${role}:${backend}" in
     align:claude)        echo "opus" ;;
+    critique:claude)     echo "opus" ;;
+    refine:claude)       echo "sonnet" ;;
     implement:claude)    echo "sonnet" ;;
     verify:claude)       echo "sonnet" ;;
     ktlint:claude)       echo "haiku" ;;
@@ -229,7 +295,7 @@ model_default() { # <role> <backend>
     # SDD_MODEL_* overrides still take precedence, so a named model can be
     # pinned the moment the plan exposes one; `sdd doctor` (T11) reports what
     # the installed CLI actually accepts.
-    align:copilot|implement:copilot|verify:copilot|ktlint:copilot) echo "auto" ;;
+    align:copilot|critique:copilot|refine:copilot|implement:copilot|verify:copilot|ktlint:copilot) echo "auto" ;;
     *)
       echo "sdd: no default model for role '$role' on backend '$backend'" >&2
       return 1
@@ -244,6 +310,8 @@ model_for_role() { # <role> <backend>
   local role="$1" backend="$2" override=""
   case "$role" in
     align)     override="${SDD_MODEL_ALIGN:-}" ;;
+    critique)  override="${SDD_MODEL_CRITIQUE:-}" ;;
+    refine)    override="${SDD_MODEL_REFINE:-}" ;;
     implement) override="${SDD_MODEL_IMPLEMENT:-}" ;;
     verify)    override="${SDD_MODEL_VERIFY:-}" ;;
     ktlint)    override="${SDD_MODEL_KTLINT:-}" ;;
@@ -297,9 +365,9 @@ resolve_agent_backend() {
 agent_not_found_message() {
   local requested="$1"
   case "$requested" in
-    claude)  echo "No agent CLI found: 'claude' is not on PATH (SDD_AGENT=claude). See README.md for setup." >&2 ;;
-    copilot) echo "No agent CLI found: 'copilot' is not on PATH (SDD_AGENT=copilot). See README.md for setup." >&2 ;;
-    *)       echo "No agent CLI found: neither 'claude' nor 'copilot' is on PATH (SDD_AGENT=auto). See README.md for setup." >&2 ;;
+    claude)  echo "No agent CLI found: 'claude' is not on PATH (SDD_AGENT=claude). See $SETUP_GUIDE for setup." >&2 ;;
+    copilot) echo "No agent CLI found: 'copilot' is not on PATH (SDD_AGENT=copilot). See $SETUP_GUIDE for setup." >&2 ;;
+    *)       echo "No agent CLI found: neither 'claude' nor 'copilot' is on PATH (SDD_AGENT=auto). See $SETUP_GUIDE for setup." >&2 ;;
   esac
   print_manual_protocol
 }
@@ -331,6 +399,8 @@ EOF
 #
 # Usage: run_agent <agent> <mode> <role> <prompt>
 #   <mode>: edit      → --permission-mode acceptEdits
+#             (with RUN_AGENT_CAPTURE=1 set by the caller, also tees output
+#              into $RUN_AGENT_OUTPUT — used for sdd-refine's report)
 #           full      → --permission-mode bypassPermissions
 #           readonly  → --permission-mode dontAsk --allowedTools "Task,Read,Grep,Glob"
 #             (also tees combined stdout/stderr into $RUN_AGENT_OUTPUT for
@@ -589,11 +659,12 @@ cmd_new() {
   fm_set "$spec" created "$(today)"
   fm_set "$spec" updated "$(today)"
   # Also insert the title
-  sed -i '' -E "s|\{Title\}|$title|" "$spec"
+  sed_inplace "$spec" -E "s|\{Title\}|$title|"
 
-  echo "✓ Spec created: $spec  (status: draft)"
+  local rel="${spec#$ROOT/}"
+  echo "✓ Spec created: $rel  (status: draft)"
   echo "  Next: fill it in → sdd ready → sdd align → sdd verify → sdd start"
-  echo "  ready:  ./scripts/sdd ready $spec"
+  echo "  ready:  ./scripts/sdd ready $rel"
 }
 
 cmd_align() {
@@ -615,6 +686,9 @@ cmd_align() {
   fm_upsert "$spec" alignment "pending"
   # Re-aligning changes the spec → any prior verify pass is stale, force a re-verify.
   fm_upsert "$spec" verify "pending"
+  # Same reasoning for the critique loop: new questions mean the reviewed
+  # artifact no longer exists, so a prior convergence no longer describes it.
+  fm_upsert "$spec" critique "pending"
   fm_set "$spec" updated "$(today)"
 
   echo "→ Alignment ($backend): questions will be generated and written into the spec ..."
@@ -629,6 +703,7 @@ cmd_align() {
   grep -E '^alignment:' "$spec" || true
   echo "  Next: open the spec, fill each '- **Answer:**' line, then:"
   echo "    ./scripts/sdd align-resolve $spec"
+  echo "    ./scripts/sdd critique $spec"
   echo "    ./scripts/sdd verify $spec"
 }
 
@@ -657,7 +732,7 @@ cmd_align_resolve() {
   fm_set "$spec" alignment "resolved"
   fm_set "$spec" updated "$(today)"
   echo "✓ All alignment questions answered → alignment: resolved ($quest/$quest)."
-  echo "  Next: sdd verify $spec"
+  echo "  Next: sdd critique $spec   (then: sdd verify $spec)"
 }
 
 # draft → ready gate: are the required sections from CLAUDE.md §9.1 filled?
@@ -688,12 +763,24 @@ cmd_start() {
   [ "$status" = "ready" ] || { echo "start only works from ready (current: $status). Run 'sdd ready' first."; exit 1; }
 
   require_alignment_resolved "$spec" || exit 1
+  require_critique_converged "$spec" || exit 1
   require_verify_passed "$spec" || exit 1
 
-  local id name branch
+  local id name branch prefix="${SDD_BRANCH_PREFIX%/}"
+  case "$prefix" in
+    ""|*[[:space:]]*) echo "✗ SDD_BRANCH_PREFIX must be a non-empty word without spaces (got '$SDD_BRANCH_PREFIX')."; exit 1 ;;
+  esac
   id="$(fm_get "$spec" task_id)"
   name="$(fm_get "$spec" task_name)"
-  branch="main/$id-$name"
+  branch="$prefix/$id-$name"
+  # A branch named exactly like the prefix blocks every '<prefix>/...' branch.
+  # Catch it before git does, with a fix the user can act on.
+  if git -C "$ROOT" show-ref --verify --quiet "refs/heads/$prefix"; then
+    echo "✗ Cannot create '$branch': a branch named '$prefix' already exists, and git"
+    echo "  cannot have both '$prefix' and '$prefix/...'. Pick another prefix, e.g.:"
+    echo "    SDD_BRANCH_PREFIX=feature ./scripts/sdd start $spec"
+    exit 1
+  fi
   echo "→ Creating branch: $branch"
   git -C "$ROOT" checkout -b "$branch"
 
@@ -714,6 +801,7 @@ cmd_implement() {
   [ "$cur" = "$branch" ] || { echo "Wrong branch ($cur). Expected: $branch"; exit 1; }
 
   require_alignment_resolved "$spec" || exit 1
+  require_critique_converged "$spec" || exit 1
   require_verify_passed "$spec" || exit 1
   resolve_agent_backend >/dev/null || exit 1
 
@@ -722,24 +810,69 @@ cmd_implement() {
     return
   fi
 
-  # No task given → implement all tasks from the Task List in order.
-  local tasks t
+  # No task given → implement every task that is not ticked yet, in order,
+  # one agent session per task. Ticked tasks ('- [x] T1') are already done.
+  local tasks open t
   tasks="$(list_tasks "$spec")"
   [ -n "$tasks" ] || { echo "No tasks found in spec (## Task List). Usage: sdd implement <spec.md> [Task]"; exit 1; }
-  echo "→ No task specified; all tasks will be implemented in order: $(echo "$tasks" | tr '\n' ' ')"
-  while IFS= read -r t; do
-    [ -n "$t" ] || continue
+  open="$(list_open_tasks "$spec")"
+  if [ -z "$open" ]; then
+    echo "✓ Every task in ## Task List is already ticked — nothing to implement."
+    echo "  To redo one: ./scripts/sdd implement $spec <Task>"
+    return 0
+  fi
+  echo "→ No task specified; open tasks will be implemented in order: $(echo "$open" | tr '\n' ' ')"
+  # A word loop, not 'while read … <<< $open': nothing here reads stdin, so an
+  # agent can never swallow the rest of the list (task ids contain no spaces).
+  for t in $open; do
     echo "════════════════════════════════════════"
     run_task "$spec" "$t"
-  done <<< "$tasks"
+  done
   echo "════════════════════════════════════════"
-  echo "✓ All tasks completed."
+  local left
+  left="$(list_open_tasks "$spec")"
+  if [ -n "$left" ]; then
+    echo "⚠ Still unticked after this run: $(echo "$left" | tr '\n' ' ')— read the agent reports above."
+  else
+    echo "✓ All tasks are ticked."
+  fi
+}
+
+# The one prompt both verify call sites send (standalone 'sdd verify' and the
+# in-loop arbiter in scripts/lib/critique.sh), so the scope rule cannot drift
+# between them. The scope paragraph repeats .claude/agents/sdd-verify.md on
+# purpose: the wrapper session relays the subagent, and a verify run that
+# reported the script's own bookkeeping (front matter saying 'critique:
+# pending' while the Critique Log already says CONVERGED) could never pass
+# inside the loop.
+#   <context>: standalone | loop
+verify_prompt() { # <spec> <context>
+  local spec="$1" context="${2:-standalone}" context_block=""
+  if [ "$context" = "loop" ]; then
+    context_block="
+You are running INSIDE 'sdd critique' as this round's final arbiter. The front matter reads
+'critique: pending' and 'verify: pending' by design until the loop has your verdict, and the
+Critique Log may already show this round as CONVERGED. That is expected, not a mismatch."
+  fi
+  cat <<EOF
+Use the sdd-verify subagent for spec: $spec
+Judge the spec's CONTENT against CLAUDE.md only. The lifecycle state written by scripts/sdd —
+the front-matter fields status, branch, alignment, verify, critique, critique_score,
+critique_rounds, created, updated, blocked_reason, dropped_reason, and the '## Critique Log'
+table — is out of scope: its values, and whether they agree with each other, are never a FAIL
+item or a '## Suspicious' item.$context_block
+
+Then relay the subagent's verdict line verbatim as YOUR first line of output: either
+'VERIFY: PASS' or 'VERIFY: FAIL', with nothing before it — not a preamble, not a heading.
+Put your summary after that line. This line is parsed by a script; omitting it fails the run.
+EOF
 }
 
 cmd_verify() {
   local spec="$1"
   [ -f "$spec" ] || { echo "Spec not found: $spec"; exit 1; }
-  resolve_agent_backend >/dev/null || exit 1
+  local backend
+  backend="$(resolve_agent_backend)" || exit 1
   echo "→ Checking spec for contradictions with CLAUDE.md ..."
   # CLAUDE.md is auto-loaded via CLAUDE.md → @CLAUDE.md; the audit protocol lives
   # in .claude/agents/sdd-verify.md and is invoked as a subagent (frontmatter
@@ -755,11 +888,7 @@ cmd_verify() {
   # parseable verdict (D5). That case must leave the front matter untouched and
   # exit non-zero, so it must not fall through to the fm_upsert below, and it
   # must not trip `set -e`'s uncontrolled exit before we can report/clean up.
-  if ! run_agent "sdd-verify" "readonly" "verify" \
-    "Use the sdd-verify subagent for spec: $spec
-Then relay the subagent's verdict line verbatim as YOUR first line of output: either
-'VERIFY: PASS' or 'VERIFY: FAIL', with nothing before it — not a preamble, not a heading.
-Put your summary after that line. This line is parsed by a script; omitting it fails the run."; then
+  if ! run_agent "sdd-verify" "readonly" "verify" "$(verify_prompt "$spec" standalone)"; then
     rm -f "${RUN_AGENT_OUTPUT:-}"
     echo
     echo "✗ Verify could not run — the agent CLI failed before producing any output" \
@@ -775,9 +904,24 @@ Put your summary after that line. This line is parsed by a script; omitting it f
   elif grep -qE 'VERIFY:[[:space:]]*FAIL' "$tmp"; then
     verdict="failed"
   fi
+
+  # Keep the report next to the spec. The terminal scroll-back used to be the
+  # only record of WHY verify failed; the critique loop's in-loop gate already
+  # writes critique/round-N-verify.md, this is its standalone counterpart.
+  local verify_dir report
+  verify_dir="$(cd "$(dirname "$spec")" && pwd)/verify"
+  mkdir -p "$verify_dir"
+  report="$verify_dir/verify-$(date +%Y%m%d-%H%M%S).md"
+  {
+    echo "<!-- generated by ./scripts/sdd verify — $(today) -->"
+    echo "<!-- verify model: $(model_for_role verify "$backend") | verdict: ${verdict:-none} -->"
+    echo
+    cat "$tmp"
+  } > "$report"
   rm -f "$tmp"
 
   echo
+  echo "  report → ${report#$ROOT/}"
   if [ "$verdict" = "passed" ]; then
     fm_upsert "$spec" verify "passed"
     fm_set "$spec" updated "$(today)"
@@ -817,10 +961,11 @@ cmd_fix_ktlint() {
   local gradle_task="${1:-app:ktlint}"
   resolve_agent_backend >/dev/null || exit 1
 
-  local tmp; tmp="$(mktemp)"
+  local tmp rc=0; tmp="$(mktemp)"
   echo "→ Running ktlint (./gradlew $gradle_task) ..."
-  # Gradle returns non-zero if there are violations; collect output anyway.
-  ( cd "$ROOT" && ./gradlew "$gradle_task" ) >"$tmp" 2>&1 || true
+  # Gradle returns non-zero if there are violations; collect output anyway and
+  # keep the exit code, so a run that failed for another reason is not "clean".
+  ( cd "$ROOT" && ./gradlew "$gradle_task" < /dev/null ) >"$tmp" 2>&1 || rc=$?
 
   # Extract .kt files with violations: 'path.kt:line:col' → path (relative to ROOT, deduplicated).
   local files
@@ -830,6 +975,16 @@ cmd_fix_ktlint() {
     | sort -u | paste -sd, - )"
 
   if [ -z "$files" ]; then
+    if [ "$rc" -ne 0 ]; then
+      # Non-zero exit with no 'File.kt:line:col' in the output: ktlint never
+      # reported anything — the task is missing, or the build/download failed.
+      echo "✗ ./gradlew $gradle_task failed (exit $rc) without reporting any ktlint violation."
+      echo "  The task may not exist in this project, or Gradle failed before ktlint ran."
+      echo "  Last lines of the Gradle output:"
+      tail -n 15 "$tmp" | sed 's/^/    /'
+      echo "  Pass the project's ktlint task explicitly, e.g.: ./scripts/sdd fix-ktlint app:ktlintCheck"
+      rm -f "$tmp"; exit 1
+    fi
     echo "✓ No ktlint violations found, nothing to fix."
     rm -f "$tmp"; return 0
   fi
@@ -894,10 +1049,11 @@ Usage:
   sdd new <feature|bug|test|refactor> "title"       Create a spec (status: draft)
   sdd align  <spec.md>                               Generate alignment questions (agent writes them into the spec)
   sdd align-resolve <spec.md>                        Check all '**Answer:**' lines are filled → alignment: resolved
+  sdd critique <spec.md> [--rounds N] [--threshold N]  Critique-to-action loop: a reviewer model (SDD_MODEL_CRITIQUE) scores the spec, executor applies the action items, repeat until converged (default: max 4 rounds, >= 6/10, 0 critical, 0 major; stops early as needs_user on user-owned or stalled items)
   sdd ready  <spec.md>                               Required-sections gate → status: ready
   sdd start  <spec.md>                               Open branch (agent) → status: active (alignment: resolved required)
   sdd verify <spec.md>                               Mandatory gate: check spec vs CLAUDE.md → verify: passed/failed
-  sdd implement <spec.md> [Task]                     Implement a task; omit Task to implement all in order (active+branch, alignment: resolved required)
+  sdd implement <spec.md> [Task]                     Implement a task; omit Task to implement every open (unticked) task in order (active+branch, alignment: resolved required)
   sdd fix-ktlint [gradle-task]                       Fix ktlint violations with agent (default: app:ktlint)
   sdd sync-agents                                    Regenerate .github/agents/*.agent.md from .claude/agents/*.md, and .claude/settings.json's "deny" array from scripts/lib/deny-list.txt
   sdd done   <spec.md>                               Quality gates + status: done
@@ -905,8 +1061,9 @@ Usage:
   sdd drop   <spec.md> "<reason>"                    status: dropped
   sdd list   [feature|bug|test|refactor]             List specs
 
+Flow:      new → ready → align → align-resolve → critique → verify → start → implement → done
 Lifecycle: draft → ready → active → done | blocked | dropped (CLAUDE.md §9.1)
-Branch:    main/{task_id}-{task_name} (e.g. main/001-biometric-login)
+Branch:    <prefix>/{task_id}-{task_name} (e.g. sdd/001-biometric-login); prefix = SDD_BRANCH_PREFIX, default 'sdd'
 EOF
 }
 
@@ -916,6 +1073,7 @@ main() {
     new)            cmd_new "$@" ;;
     align)          cmd_align "$@" ;;
     align-resolve)  cmd_align_resolve "$@" ;;
+    critique)       cmd_critique "$@" ;;
     ready)          cmd_ready "$@" ;;
     start)          cmd_start "$@" ;;
     implement)      cmd_implement "$@" ;;

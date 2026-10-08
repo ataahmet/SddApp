@@ -3,9 +3,12 @@ task_id: NNN
 task_name: short-slug
 type: feature
 status: draft            # draft → ready → active → done | blocked | dropped
-branch: ~                # `scripts/sdd start` fills in: main/NNN-short-slug
+branch: ~                # `scripts/sdd start` fills in: sdd/NNN-short-slug
 alignment: pending       # `scripts/sdd align` → pending, `align-resolve` → resolved
 verify: pending          # `scripts/sdd verify` → passed | failed (gate for start/implement)
+critique: pending        # `scripts/sdd critique` → converged | needs_user | max_rounds | skipped
+critique_score: ~        # last reviewer score, 0-10
+critique_rounds: 0       # rounds spent in the critique-to-action loop
 created: YYYY-MM-DD
 updated: YYYY-MM-DD
 target_version: X.Y.Z
@@ -70,3 +73,9 @@ None
 | Date | Status | Change |
 |------|--------|--------|
 | YYYY-MM-DD | draft | Spec created |
+
+## Critique Log
+<!-- `./scripts/sdd critique` appends one row per round. Reports: ./critique/round-N.md -->
+
+| Round | Score | Critical | Major | Verdict | Report |
+|-------|-------|----------|-------|---------|--------|

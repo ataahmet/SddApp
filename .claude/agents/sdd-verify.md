@@ -35,6 +35,32 @@ Read/Grep/Glob (or that backend's equivalent read-only tools) — you cannot mod
   forbids; state exposed through channels CLAUDE.md forbids; hardcoded user-facing strings;
   an unexplained entry under "Deviations from CLAUDE.md".
 
+## Scope: the spec's content, not its lifecycle state
+
+You judge what the spec **says** — goal, scope, layers, contracts, tasks, criteria, test plan,
+alignment answers, deviations — against CLAUDE.md. You do **not** judge where the spec is in
+its lifecycle. That state is written and enforced by `scripts/sdd`, not by you:
+
+- the front-matter fields `status`, `branch`, `alignment`, `verify`, `critique`,
+  `critique_score`, `critique_rounds`, `created`, `updated`, `blocked_reason`,
+  `dropped_reason`;
+- the `## Critique Log` table and anything under `<spec-dir>/critique/` or
+  `<spec-dir>/verify/`.
+
+Their values — and whether they agree with each other — are **never** a finding: not a FAIL
+bullet, not a `## Suspicious` item. The gate chain in CLAUDE.md §9.1 describes the process the
+script runs; it is not a rule the spec's content can violate, and `sdd start` / `sdd implement`
+already refuse to run when a gate is not met. Do not tell the user to update these fields or to
+re-run a command because of them.
+
+They are often mid-update while you run. Inside `sdd critique` you are the round's arbiter, and
+the front matter reads `critique: pending` and `verify: pending` **by design** until the loop
+has your verdict — the Critique Log may already show the round as `CONVERGED`. That is not a
+mismatch, and reporting it would make the gate impossible to pass.
+
+The other front-matter fields (`task_id`, `task_name`, `type`, `target_version`) are spec
+content and stay in scope.
+
 ## Output (markdown only)
 
 - The **very first line** MUST be a machine-readable verdict, exactly one of:
