@@ -161,7 +161,8 @@ driver_copilot_warn_drift() {
 #             also tees combined stdout/stderr into $RUN_AGENT_OUTPUT, same
 #             contract as driver-claude.sh's readonly branch.
 #   Every mode gets the deny-list.txt expansion (D3) and a pre-dispatch drift
-#   warning (D7) first.
+#   warning (D7) first, and reads stdin from /dev/null so the agent can never
+#   consume a caller's loop input (see driver-claude.sh).
 driver_copilot_run_agent() {
   local agent="$1" mode="$2" model="$3" prompt="$4"
   local allow_tools
@@ -186,13 +187,13 @@ driver_copilot_run_agent() {
       if [ "${RUN_AGENT_CAPTURE:-0}" = "1" ]; then
         cmd+=(-s --log-level none)
         RUN_AGENT_OUTPUT="$(mktemp)"
-        ( cd "$ROOT" && "${cmd[@]}" ) 2>&1 | tee "$RUN_AGENT_OUTPUT" || true
+        ( cd "$ROOT" && "${cmd[@]}" < /dev/null ) 2>&1 | tee "$RUN_AGENT_OUTPUT" || true
       else
-        ( cd "$ROOT" && "${cmd[@]}" ) || true
+        ( cd "$ROOT" && "${cmd[@]}" < /dev/null ) || true
       fi
       ;;
     full)
-      ( cd "$ROOT" && "${cmd[@]}" ) || true
+      ( cd "$ROOT" && "${cmd[@]}" < /dev/null ) || true
       ;;
     readonly)
       cmd+=(--deny-tool "write,shell" -s --log-level none)
@@ -203,7 +204,7 @@ driver_copilot_run_agent() {
       # failure apart from a completed run with an unparseable verdict.
       # `set -o pipefail` (scripts/sdd, sourced into this file) makes the
       # pipeline's status the `copilot` process's status even through `tee`.
-      ( cd "$ROOT" && "${cmd[@]}" ) 2>&1 | tee "$RUN_AGENT_OUTPUT"
+      ( cd "$ROOT" && "${cmd[@]}" < /dev/null ) 2>&1 | tee "$RUN_AGENT_OUTPUT"
       ;;
     *)
       echo "driver-copilot: unknown mode '$mode'" >&2

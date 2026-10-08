@@ -577,7 +577,7 @@ the report after them. These lines are parsed by a script; omitting them fails t
       if [ "$vrc" -eq 2 ]; then
         echo
         echo "✗ The verify gate could not run (CLI failed before producing output)." \
-             "Front matter left at 'pending'; fix the CLI and re-run 'sdd critique'." >&2
+             "Wrote 'critique: failed'; fix the CLI and re-run 'sdd critique'." >&2
         fm_upsert "$spec" critique "failed"
         exit 1
       fi

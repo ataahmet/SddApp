@@ -3,7 +3,7 @@ task_id: NNN
 task_name: short-slug
 type: refactor
 status: draft            # draft → ready → active → done | blocked | dropped
-branch: ~                # `scripts/sdd start` fills in: main/NNN-short-slug
+branch: ~                # `scripts/sdd start` fills in: sdd/NNN-short-slug
 alignment: pending       # `scripts/sdd align` → pending, `align-resolve` → resolved
 verify: pending          # `scripts/sdd verify` → passed | failed (gate for start/implement)
 critique: pending        # `scripts/sdd critique` → converged | needs_user | max_rounds | skipped
