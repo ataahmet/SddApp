@@ -11,7 +11,7 @@ needed. Run `./scripts/sdd help` for the command summary.
 
 | Requirement | Why |
 |-------------|-----|
-| macOS or Linux, `bash` 3.2 or newer, `git` | `scripts/sdd` is a bash script; it avoids bash 4 syntax and uses no GNU-only tool options, so BSD (macOS) and GNU (Linux) userlands both work. The target project must be a git repository — `sdd start` creates a branch in it |
+| macOS or Linux (Windows: WSL), `bash` 3.2 or newer, `git`, `curl` or `wget` | `scripts/sdd` is a bash script; it avoids bash 4 syntax and uses no GNU-only tool options, so BSD (macOS) and GNU (Linux) userlands both work. The target project must be a git repository — `sdd start` creates a branch in it |
 | An agent CLI: Claude Code (`claude`) or GitHub Copilot CLI (`copilot`) | `align`, `critique`, `verify`, `implement` and `fix-ktlint` dispatch agents through it |
 | **JDK 17** | CLAUDE.md pins Java 17, and the Gradle build and ktlint below run on it. `java -version` must print 17 (or point `JAVA_HOME`/`org.gradle.java.home` at it) |
 | **Android SDK**, reachable through `local.properties` (`sdk.dir=…`) or `ANDROID_HOME` | `sdd done` and the implement agent run `assembleDevDebug`. `local.properties` is git-ignored, so a freshly cloned project has none: write it, or export `ANDROID_HOME`. On a machine without Android Studio also install `cmdline-tools` and accept the licences (`sdkmanager --licenses`) |
@@ -19,54 +19,67 @@ needed. Run `./scripts/sdd help` for the command summary.
 | The Gradle tasks listed under [Project prerequisites](#project-prerequisites-gradle) | `implement`, `done` and `fix-ktlint` call them; a new Android project has none of them |
 | A UTF-8 locale (recommended) — e.g. `LANG=en_US.UTF-8` | The templates contain non-ASCII characters (`§`, `→`), and some `awk`/`sed` builds handle multibyte input poorly under a `C` locale. macOS Terminal sets UTF-8 already; SSH sessions, cron jobs and CI runners often do not. Spec parsing was not observed to fail under `LC_ALL=C` on macOS, so treat this as a precaution, not a hard requirement |
 
-### 2. Install the kit
+### 2. Install SDD into your project
 
-The kit is not published as a package: you build a payload from the SDD repository, then install it
-into your project.
+Run the installer from inside the project's git repository (any subdirectory works). It downloads
+the kit from GitHub and copies it into that project only — nothing is installed system-wide, no
+`PATH` change, nothing outside the repository:
 
 ```bash
-git clone <sdd-repo-url> sdd-kit
-cd sdd-kit
-
-bash scripts/sdd-artifact                                  # → dist/sdd-artifact/
-bash dist/sdd-artifact/install.sh /path/to/your-project
+cd /path/to/your-project
+curl -fsSL https://raw.githubusercontent.com/ataahmet/SddApp/main/install.sh | bash
 ```
 
-The build step writes `dist/sdd-artifact/`: the `install.sh` script plus a `payload/` tree holding
-every file listed in `artifact/manifest.txt`. The installer then
+The installer downloads the latest release, checks its SHA-256, and then
 
-- copies the payload into the target repository, creating directories as needed — `CLAUDE.md`,
-  `SDD-README.md` (this guide), `.claude/`, `.github/`, `scripts/`, `specs/templates/`;
-- appends the four `specs/` rules to the target's `.gitignore` (see [Where specs live](#where-specs-live));
+- copies the kit into the repository, creating directories as needed — `CLAUDE.md`,
+  `SDD-README.md` (this guide), `.claude/`, `.github/agents/`, `.github/copilot-instructions.md`,
+  `scripts/`, `specs/templates/` — every path listed in the kit's `manifest.txt`;
+- writes the installed version to `scripts/lib/VERSION`;
+- appends the four `specs/` rules to the project's `.gitignore` (see [Where specs live](#where-specs-live));
 - marks `scripts/sdd` executable.
 
-**It refuses to overwrite.** If the target already has a file from the payload, the install stops
-there:
+Each project gets its own copy, so two projects can run different SDD versions. Options go after
+`bash -s --`:
+
+| Option | Variable | What it does |
+|--------|----------|--------------|
+| `--update` | — | refresh the kit, keep `CLAUDE.md`, `.claude/settings.json`, `.claude/agents/` (see [Updating the kit](#updating-the-kit)) |
+| `--force` | — | overwrite everything, customised files included |
+| `--version v0.2.0` | `SDD_VERSION` | a release tag (default `latest`), or a branch name such as `main` to install unreleased code |
+| `--dir <path>` | `SDD_PROJECT_DIR` | install into another repository instead of the one you are in |
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ataahmet/SddApp/main/install.sh | bash -s -- --version v0.2.0
+```
+
+**It refuses to overwrite.** It checks every file first, and if one already exists it stops before
+writing anything:
 
 ```
-Refusing to overwrite existing file: CLAUDE.md
-Re-run with --force only if replacing this file is intentional.
+✗ Nothing was written: these files already exist in /path/to/your-project:
+  CLAUDE.md
 ```
 
 Most projects already have a `CLAUDE.md`, so this is the usual first outcome. Either move your own
 file aside and merge it afterwards, or install with `--force`:
 
 ```bash
-bash dist/sdd-artifact/install.sh --force /path/to/your-project
+curl -fsSL https://raw.githubusercontent.com/ataahmet/SddApp/main/install.sh | bash -s -- --force
 ```
 
 `--force` also replaces `.claude/settings.json` and `.claude/agents/*.md` — together with
 `CLAUDE.md` these are the three things you are expected to customise
-(see [6. Adapt CLAUDE.md to your project](#6-adapt-claudemd-to-your-project)). To refresh an
-existing installation without losing them, use `--update` instead of `--force`
-(see [Updating the kit](#updating-the-kit)).
+(see [6. Adapt CLAUDE.md to your project](#6-adapt-claudemd-to-your-project)). Agent files of your
+own in `.claude/agents/` that the kit does not ship are never touched. The installer also refuses to
+run outside a git repository and in your home directory, so a stray `curl | bash` cannot scatter
+these files there.
 
-Check the result from the target project, which must be a git repository (`sdd start` creates a
-branch in it):
+Check the result. The project must be a git repository (`sdd start` creates a branch in it):
 
 ```bash
-cd /path/to/your-project
 ./scripts/sdd help            # command summary
+./scripts/sdd version         # installed kit version
 ./scripts/sdd list            # prints the header row, no specs yet
 git add CLAUDE.md SDD-README.md .claude .github scripts specs .gitignore
 ```
@@ -715,31 +728,32 @@ Agent runs never read from your terminal: their standard input is closed.
 
 ## Updating the kit
 
-The kit has no self-update command, and `scripts/sdd-artifact` is not part of the payload: updates
-are built in the kit repository and installed over your project.
+From the project, either of these refreshes it to the latest release (or pass a version:
+`./scripts/sdd self-update v0.3.0`):
 
 ```bash
-cd sdd-kit && git pull
-bash scripts/sdd-artifact                                      # → dist/sdd-artifact/
-bash dist/sdd-artifact/install.sh --update /path/to/your-project
+./scripts/sdd self-update
+curl -fsSL https://raw.githubusercontent.com/ataahmet/SddApp/main/install.sh | bash -s -- --update
 ```
 
-`--update` refreshes the kit's own files and keeps the three you are expected to own, printing each
-one it kept:
+`self-update` downloads the installer and runs it with `--update` on this project; use the `curl`
+form if `scripts/sdd` itself no longer runs. `--update` refreshes the kit's own files and keeps the
+three you are expected to own:
 
 | Path | `--update` | Why |
 |------|-----------|-----|
 | `scripts/sdd`, `scripts/lib/*`, `specs/templates/*`, `SDD-README.md`, `.github/` | replaced | the kit's own files; your changes here are lost, so keep local changes in a fork of the kit repository instead |
 | `CLAUDE.md` | kept | your project's architecture rules |
 | `.claude/settings.json` | kept | your `allow`/`ask` policy (`deny` is regenerated by `sdd sync-agents`) |
-| `.claude/agents/*.md` | kept | the hand-edited single source |
+| `.claude/agents/*.md` | kept | the hand-edited single source; agents that are new in the kit are added |
 
-Because the agent definitions are kept, a kit update that changed them does not reach your project
-on its own. The command prints the `diff -ru` line to compare, and `sdd sync-agents` regenerates
-`.github/agents/` and the settings' `deny` array after you merge anything.
+Because these are kept, a kit update that changed them does not reach your project on its own. The
+installer lists every kept file whose kit version differs, with a link to the kit's version on
+GitHub; merge what you need, then run `./scripts/sdd sync-agents` to regenerate `.github/agents/`
+and the settings' `deny` array.
 
-`--force` replaces everything in the payload, `CLAUDE.md` included; use it only on a project whose
-`CLAUDE.md` you have not adapted yet. The two flags cannot be combined.
+`--force` replaces everything, `CLAUDE.md` included; use it only on a project whose `CLAUDE.md` you
+have not adapted yet. The two flags cannot be combined.
 
 ## Troubleshooting
 

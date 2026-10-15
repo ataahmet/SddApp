@@ -1,0 +1,40 @@
+# Publishes the SDD kit on every version tag:
+#   git tag v0.2.0 && git push origin v0.2.0
+# install.sh then picks it up as `latest` (releases/latest/download/sdd.tar.gz).
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Lint the installer and the CLI
+        run: shellcheck -S error install.sh scripts/sdd scripts/sdd-release scripts/lib/*.sh
+
+      - name: Build the kit
+        run: bash scripts/sdd-release --version "$GITHUB_REF_NAME" --out dist
+
+      - name: Smoke-test install → new → list → update in a fresh project
+        run: |
+          set -euo pipefail
+          proj="$RUNNER_TEMP/proj" && mkdir -p "$proj" && cd "$proj" && git init -q
+          SDD_TARBALL="$GITHUB_WORKSPACE/dist/sdd.tar.gz" bash "$GITHUB_WORKSPACE/install.sh"
+          ./scripts/sdd version | grep -F "$GITHUB_REF_NAME"
+          ./scripts/sdd new feature "Smoke test" < /dev/null
+          ./scripts/sdd list | grep -F "001-smoke-test"
+          SDD_TARBALL="$GITHUB_WORKSPACE/dist/sdd.tar.gz" bash "$GITHUB_WORKSPACE/install.sh" --update
+
+      - name: Publish the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --title "sdd $GITHUB_REF_NAME" --generate-notes
