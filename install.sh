@@ -129,12 +129,31 @@ main() {
   # The project: the git repository you are in, unless --dir says otherwise.
   # Refusing to guess outside git keeps a stray `curl | bash` in ~ or / from
   # scattering CLAUDE.md and .claude/ there.
+  local from_git=0
   if [ -z "$target" ]; then
+    from_git=1
     target="$(git rev-parse --show-toplevel 2>/dev/null)" \
       || die "Not inside a git repository. cd into your project first (or git init it), or pass --dir <project>."
   fi
   target="$(cd "$target" 2>/dev/null && pwd)" || die "Project directory does not exist: $target"
-  [ "$target" != "$HOME" ] && [ "$target" != "/" ] || die "Refusing to install into $target — cd into your project."
+  local here
+  here="$(pwd -P)"
+  case "$target" in
+    "$HOME"|"$(cd "$HOME" 2>/dev/null && pwd -P)"|/)
+      # Run from a folder inside a home directory that is itself a git
+      # repository: git hands back ~ as the project. Say so, rather than
+      # telling someone who is already in their project to cd into it.
+      if [ "$from_git" -eq 1 ] && [ "$here" != "$target" ]; then
+        die "$here is not a git repository of its own: git found the repository at $target
+  (your home directory), so SDD would be installed there. Make this folder its own
+  repository, then run the command again:
+    git init
+  $target/.git is probably left over from a 'git init' run in your home directory;
+  check it with: git -C ~ log --oneline -3"
+      fi
+      die "Refusing to install into $target — cd into your project first."
+      ;;
+  esac
   git -C "$target" rev-parse --git-dir >/dev/null 2>&1 \
     || warn "$target is not a git repository; 'sdd start' needs one (git init)."
 
