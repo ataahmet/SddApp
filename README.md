@@ -20,7 +20,7 @@ curl -fsSL https://raw.githubusercontent.com/ataahmet/SddApp/main/install.sh | b
 
 Each project gets its own copy (`scripts/sdd`, `CLAUDE.md`, `.claude/`, `.github/agents/`,
 `specs/templates/`). Update a project with `./scripts/sdd self-update`. Full guide:
-[artifact/sdd-usage.md](artifact/sdd-usage.md) (installed into projects as `SDD-README.md`).
+[kit/sdd-usage.md](kit/sdd-usage.md) (installed into projects as `SDD-README.md`).
 Maintainers: [RELEASING.md](RELEASING.md).
 
 🤖 Multi-agent architecture: Claude CLI & Copilot CLI, side by side.

@@ -3,7 +3,7 @@
 # Flow: new → ready → align → align-resolve → critique(loop) → verify → start(branch) → implement → done
 # Lifecycle: draft → ready → active → done | blocked | dropped
 # Gate: verify must PASS (no open questions) before implement can run.
-# Details: CLAUDE.md §9 / §9.1, SDD-README.md (artifact/sdd-usage.md in the kit repo)
+# Details: CLAUDE.md §9 / §9.1, SDD-README.md (kit/sdd-usage.md in the kit repo)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -31,11 +31,11 @@ SDD_AGENT="${SDD_AGENT:-auto}"
 SDD_BRANCH_PREFIX="${SDD_BRANCH_PREFIX:-sdd}"
 
 # Setup guide named in error messages: 'SDD-README.md' in an installed project,
-# 'artifact/sdd-usage.md' in the kit repository itself (same document).
+# 'kit/sdd-usage.md' in the kit repository itself (same document).
 if [ -f "$ROOT/SDD-README.md" ]; then
   SETUP_GUIDE="SDD-README.md"
 else
-  SETUP_GUIDE="artifact/sdd-usage.md"
+  SETUP_GUIDE="kit/sdd-usage.md"
 fi
 
 # Per-role model selection (premium quota optimisation). Each of these env vars,
@@ -1050,7 +1050,7 @@ kit_version() {
   local base sha
   if [ -f "$ROOT/scripts/lib/VERSION" ]; then
     tr -d '[:space:]' < "$ROOT/scripts/lib/VERSION"
-  elif [ -f "$ROOT/artifact/manifest.txt" ] && [ -f "$ROOT/VERSION" ]; then
+  elif [ -f "$ROOT/kit/manifest.txt" ] && [ -f "$ROOT/VERSION" ]; then
     # Same rule as scripts/sdd-release: plain VERSION only on its clean tag.
     base="$(tr -d '[:space:]' < "$ROOT/VERSION")"
     if [ "$(git -C "$ROOT" describe --exact-match --tags HEAD 2>/dev/null)" = "v$base" ] \
@@ -1083,19 +1083,36 @@ download() { # <url> <file>
 }
 
 # Re-runs the remote installer on this project with --update: the kit's files
-# are refreshed, CLAUDE.md, .claude/settings.json and .claude/agents/ are kept.
-# The installer swaps each file in by rename, so replacing this running script
-# is safe.
+# are refreshed; CLAUDE.md, .claude/settings.json, .claude/agents/ and
+# scripts/lib/deny-list.txt are kept. The installer swaps each file in by
+# rename, so replacing this running script is safe.
+#
+# The installer comes from the release being installed (an asset since 0.2.0),
+# so a project only runs installer code that shipped with that kit; a branch
+# uses the branch's copy. Releases older than that carry no installer, and
+# main's copy stands in for them.
 cmd_self_update() {
-  local version="${1:-latest}" url script rc=0
-  if [ -f "$ROOT/artifact/manifest.txt" ]; then
+  local version="${1:-latest}" url fallback script rc=0
+  if [ -f "$ROOT/kit/manifest.txt" ]; then
     echo "This is the SDD kit repository itself — update it with git pull."
     return 0
   fi
-  url="${SDD_INSTALL_URL:-https://raw.githubusercontent.com/$SDD_REPO/main/install.sh}"
+  case "$version" in
+    latest)         url="https://github.com/$SDD_REPO/releases/latest/download/install.sh" ;;
+    v[0-9]*|[0-9]*) url="https://github.com/$SDD_REPO/releases/download/v${version#v}/install.sh" ;;
+    *)              url="https://raw.githubusercontent.com/$SDD_REPO/$version/install.sh" ;;
+  esac
+  url="${SDD_INSTALL_URL:-$url}"
+  fallback="https://raw.githubusercontent.com/$SDD_REPO/main/install.sh"
   script="$(mktemp)"
   echo "→ Updating SDD in $ROOT ($(kit_version) → $version) ..."
-  download "$url" "$script" || { rm -f "$script"; echo "✗ Could not download the installer: $url" >&2; return 1; }
+  if ! download "$url" "$script" 2>/dev/null; then
+    if [ "$url" = "$fallback" ] || ! download "$fallback" "$script"; then
+      rm -f "$script"
+      echo "✗ Could not download the installer: $url" >&2
+      return 1
+    fi
+  fi
   bash "$script" --update --dir "$ROOT" --version "$version" || rc=$?
   rm -f "$script"
   return "$rc"
@@ -1125,7 +1142,7 @@ Usage:
   sdd drop   <spec.md> "<reason>"                    status: dropped
   sdd list   [feature|bug|test|refactor]             List specs
   sdd version                                        Installed kit version
-  sdd self-update [X.Y.Z]                            Update this project's SDD files from GitHub (latest release by default); keeps CLAUDE.md, .claude/settings.json, .claude/agents/
+  sdd self-update [X.Y.Z]                            Update this project's SDD files from GitHub (latest release by default); keeps CLAUDE.md, .claude/settings.json, .claude/agents/, scripts/lib/deny-list.txt
 
 Flow:      new → ready → align → align-resolve → critique → verify → start → implement → done
 Lifecycle: draft → ready → active → done | blocked | dropped (CLAUDE.md §9.1)

@@ -2,7 +2,7 @@
 
 Projects get SDD with `install.sh`, run from inside the project; each project keeps its own copy.
 This repository is the source of that kit; this page is for maintainers. Users read
-`artifact/sdd-usage.md`, which the installer puts into their project as `SDD-README.md`.
+`kit/sdd-usage.md`, which the installer puts into their project as `SDD-README.md`.
 
 ## Versions
 
@@ -26,14 +26,14 @@ moved file).
 ```text
 sdd/
   VERSION          written to <project>/scripts/lib/VERSION on install
-  manifest.txt     the paths install.sh copies into the project (= artifact/manifest.txt)
+  manifest.txt     the paths install.sh copies into the project (= kit/manifest.txt)
   gitignore.sdd    the rules it appends to the project's .gitignore
   payload/…        the files themselves
 ```
 
 The files are taken from their real paths in this repository (`scripts/sdd`, `scripts/lib/`,
 `CLAUDE.md`, `.claude/`, `.github/agents/`, `specs/templates/` …), except `SDD-README.md`, which is
-`artifact/sdd-usage.md`. To ship a new file to projects, add it to `artifact/manifest.txt`.
+`kit/sdd-usage.md`. To ship a new file to projects, add it to `kit/manifest.txt`.
 
 ## Publishing a version
 
@@ -52,15 +52,18 @@ shellchecks the scripts, builds the archive, installs it into a fresh repository
 | Asset | Used by |
 |-------|---------|
 | `sdd.tar.gz` + `.sha256` | `install.sh` — `releases/latest/download/sdd.tar.gz` always means the newest release |
-| `sdd-0.3.0.tar.gz` + `.sha256` | a versioned copy of the same archive |
+| `install.sh` | `./scripts/sdd self-update`, so a project runs the installer that shipped with the kit it installs |
+
+Never create a release by hand on GitHub: it gets no `sdd.tar.gz`, `install.sh` then cannot install
+`latest`, and the workflow cannot publish the tag's own release over it.
 
 Projects pick it up with `./scripts/sdd self-update` (latest) or `./scripts/sdd self-update 0.3.0`,
 which reports `SDD updated 0.2.0 → 0.3.0`.
 
-## Before the first release, or to try a branch
+## Trying a branch
 
-Without a release `latest` has nothing to download; install from a branch instead. The installer
-downloads the branch's source and assembles the same kit with `scripts/sdd-release`:
+To install unreleased code, name the branch. The installer downloads the branch's source and
+assembles the same kit with `scripts/sdd-release`, stamped `<VERSION>-dev+<branch>.<commit>`:
 
 ```bash
 cd some-test-project

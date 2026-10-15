@@ -1,4 +1,4 @@
-# SDD artifact payload
+# SDD kit payload: the files install.sh copies into a project
 # Paths are relative to the repository root and are installed unchanged.
 CLAUDE.md
 SDD-README.md

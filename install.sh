@@ -8,6 +8,7 @@
 # Options (after `bash -s --`, or as the matching environment variables):
 #   --update          refresh the kit and KEEP the files you customise:
 #                       CLAUDE.md  .claude/settings.json  .claude/agents/
+#                       scripts/lib/deny-list.txt
 #   --force           overwrite everything, customised files included
 #   --version <v>     SDD_VERSION      latest (default) | 0.2.0 | main (a branch, built from source)
 #   --dir <path>      SDD_PROJECT_DIR  project to install into (default: the git repository you are in)
@@ -25,6 +26,33 @@ SDD_WORK_DIR=""
 say()  { printf '%s\n' "$*"; }
 warn() { printf '! %s\n' "$*" >&2; }
 die()  { printf '✗ %s\n' "$*" >&2; exit 1; }
+
+# Printed from here rather than read back from the file's header: under
+# `curl | bash` there is no file to read.
+usage() {
+  cat <<'EOF'
+SDD installer — adds SDD to the git repository you run it in. Nothing is
+installed system-wide.
+
+  cd your-project
+  curl -fsSL https://raw.githubusercontent.com/ataahmet/SddApp/main/install.sh | bash
+  curl -fsSL https://raw.githubusercontent.com/ataahmet/SddApp/main/install.sh | bash -s -- <options>
+
+Options:
+  --update        refresh the kit and KEEP the files you customise:
+                    CLAUDE.md  .claude/settings.json  .claude/agents/
+                    scripts/lib/deny-list.txt
+  --force         overwrite everything, customised files included
+  --version <v>   latest (default) | 0.2.0 | main (a branch, built from source)
+  --dir <path>    install into this repository instead of the one you are in
+  -h, --help      this text
+
+Environment: SDD_VERSION, SDD_PROJECT_DIR (as --version, --dir), SDD_REPO
+(default ataahmet/SddApp), SDD_TARBALL (a URL or path to install from instead).
+
+Inside a project that has SDD:  ./scripts/sdd self-update
+EOF
+}
 
 download() { # <url-or-path> <file>
   case "$1" in
@@ -111,7 +139,7 @@ main() {
       --force)   force=1; shift ;;
       --version) version="${2:?--version needs a value}"; shift 2 ;;
       --dir)     target="${2:?--dir needs a path}"; shift 2 ;;
-      -h|--help) sed -n '2,22p' "${BASH_SOURCE[0]:-/dev/null}" 2>/dev/null | sed 's/^# \{0,1\}//' || true; exit 0 ;;
+      -h|--help) usage; exit 0 ;;
       *) die "Unknown option: $1" ;;
     esac
   done
@@ -182,7 +210,10 @@ main() {
   if [ "$mode" = "auto" ]; then say "→ Downloading SDD from $url"; else say "→ Downloading SDD ($version) from $url"; fi
   if ! download "$url" "$work/kit.tar.gz"; then
     if [ "$mode" = "release" ] && [ "$version" = "latest" ]; then
-      die "No release found for $repo yet. Install from the main branch instead:
+      die "Could not download sdd.tar.gz from the latest release of $repo. Either there is
+  no release yet, or the latest release was created by hand on GitHub and has no
+  sdd.tar.gz in it: releases are built by the release workflow when a v* tag is pushed.
+  Install from the main branch meanwhile:
     curl -fsSL https://raw.githubusercontent.com/$repo/main/install.sh | bash -s -- --version main"
     fi
     die "Download failed: $url"
@@ -230,7 +261,7 @@ main() {
   [ -z "$missing" ] || die "The downloaded kit is incomplete, missing:$missing"
   if [ -n "$conflicts" ]; then
     printf '✗ Nothing was written: these files already exist in %s:%s\n\n' "$target" "$conflicts" >&2
-    printf '  SDD already installed?  re-run with --update  (refresh the kit, keep CLAUDE.md, .claude/settings.json, .claude/agents/)\n' >&2
+    printf '  SDD already installed?  re-run with --update  (refresh the kit, keep CLAUDE.md, .claude/settings.json, .claude/agents/, deny-list.txt)\n' >&2
     printf '  Replace them all:       re-run with --force\n' >&2
     printf '  Or move your own CLAUDE.md aside, install, and merge it back.\n' >&2
     printf '\n  e.g. curl -fsSL https://raw.githubusercontent.com/%s/main/install.sh | bash -s -- --update\n' "$repo" >&2
@@ -239,9 +270,10 @@ main() {
 
   # Pass 2 — copy. User-owned: the files a project is expected to make its own
   # (CLAUDE.md carries its architecture rules, settings.json its local policy,
-  # .claude/agents/ the hand-edited agent source); --update leaves them alone
-  # but still adds agents that are new in the kit.
-  local user_owned=" CLAUDE.md .claude/settings.json .claude/agents/ " owned
+  # .claude/agents/ the hand-edited agent source, deny-list.txt the files no
+  # agent may read); --update leaves them alone but still adds agents that are
+  # new in the kit.
+  local user_owned=" CLAUDE.md .claude/settings.json .claude/agents/ scripts/lib/deny-list.txt " owned
   local n_new=0 n_upd=0 n_kept=0 differs=""
   while IFS="$(printf '\t')" read -r entry rel; do
     case "$user_owned" in
@@ -263,6 +295,13 @@ main() {
   chmod +x "$target/scripts/sdd"
   printf '%s\n' "$kit_version" > "$target/scripts/lib/VERSION"
 
+  # .github/agents/ is generated from .claude/agents/, and the deny array of
+  # .claude/settings.json from deny-list.txt. Pass 2 copied the kit's generated
+  # copies, but the sources may be the project's own (kept by --update, or its
+  # own agents beside the kit's), so regenerate them from what is actually there.
+  local sync_out sync_ok=1
+  sync_out="$(bash "$target/scripts/sdd" sync-agents 2>&1)" || sync_ok=0
+
   local rule gitignore="$target/.gitignore"
   touch "$gitignore"
   while IFS= read -r rule || [ -n "$rule" ]; do
@@ -276,6 +315,15 @@ main() {
     say "✓ SDD $kit_version — already up to date; kit files refreshed ($n_new added, $n_upd replaced, $n_kept kept)"
   else
     say "✓ SDD updated $previous → $kit_version in $target — $n_new added, $n_upd replaced, $n_kept kept"
+  fi
+
+  if [ "$sync_ok" -eq 0 ]; then
+    say ""
+    warn "Could not regenerate .github/agents/ from .claude/agents/, so Copilot may run"
+    warn "different agent rules than Claude. Fix the cause and run ./scripts/sdd sync-agents:"
+    printf '%s\n' "$sync_out" | grep -v '^→\|^  ·' | sed 's/^/    /' >&2
+  elif [ "$update" -eq 1 ]; then
+    say "  .github/agents/ and the settings' deny list regenerated from your .claude/agents/ and deny-list.txt"
   fi
 
   if [ -n "$differs" ]; then
