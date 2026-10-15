@@ -1038,70 +1038,6 @@ cmd_list() {
 }
 
 ###############################################################################
-# Kit version and self-update
-###############################################################################
-# install.sh writes the installed kit version to scripts/lib/VERSION: X.Y.Z for
-# a release, X.Y.Z-dev+<branch>.<commit> for a branch install. In the kit
-# repository itself it is VERSION plus the checked-out commit.
-
-SDD_REPO="${SDD_REPO:-ataahmet/SddApp}"
-
-kit_version() {
-  local base sha
-  if [ -f "$ROOT/scripts/lib/VERSION" ]; then
-    tr -d '[:space:]' < "$ROOT/scripts/lib/VERSION"
-  elif [ -f "$ROOT/artifact/manifest.txt" ] && [ -f "$ROOT/VERSION" ]; then
-    # Same rule as scripts/sdd-release: plain VERSION only on its clean tag.
-    base="$(tr -d '[:space:]' < "$ROOT/VERSION")"
-    if [ "$(git -C "$ROOT" describe --exact-match --tags HEAD 2>/dev/null)" = "v$base" ] \
-       && git -C "$ROOT" diff --quiet HEAD 2>/dev/null; then
-      echo "$base"
-      return
-    fi
-    sha="$(git -C "$ROOT" rev-parse --short=7 HEAD 2>/dev/null || echo unknown)"
-    git -C "$ROOT" diff --quiet HEAD 2>/dev/null || sha="$sha.dirty"
-    echo "$base-dev+$sha"
-  else
-    echo "unknown (installed before versioning; ./scripts/sdd self-update records it)"
-  fi
-}
-
-cmd_version() {
-  echo "sdd $(kit_version)"
-}
-
-# Fetches <url> into <file> with curl or wget.
-download() { # <url> <file>
-  if command -v curl >/dev/null 2>&1; then
-    curl -fsSL --retry 2 -o "$2" "$1"
-  elif command -v wget >/dev/null 2>&1; then
-    wget -q -O "$2" "$1"
-  else
-    echo "✗ Neither curl nor wget is installed." >&2
-    return 1
-  fi
-}
-
-# Re-runs the remote installer on this project with --update: the kit's files
-# are refreshed, CLAUDE.md, .claude/settings.json and .claude/agents/ are kept.
-# The installer swaps each file in by rename, so replacing this running script
-# is safe.
-cmd_self_update() {
-  local version="${1:-latest}" url script rc=0
-  if [ -f "$ROOT/artifact/manifest.txt" ]; then
-    echo "This is the SDD kit repository itself — update it with git pull."
-    return 0
-  fi
-  url="${SDD_INSTALL_URL:-https://raw.githubusercontent.com/$SDD_REPO/main/install.sh}"
-  script="$(mktemp)"
-  echo "→ Updating SDD in $ROOT ($(kit_version) → $version) ..."
-  download "$url" "$script" || { rm -f "$script"; echo "✗ Could not download the installer: $url" >&2; return 1; }
-  bash "$script" --update --dir "$ROOT" --version "$version" || rc=$?
-  rm -f "$script"
-  return "$rc"
-}
-
-###############################################################################
 # Usage / entry point
 ###############################################################################
 
@@ -1124,8 +1060,6 @@ Usage:
   sdd block  <spec.md> "<reason>"                    status: blocked
   sdd drop   <spec.md> "<reason>"                    status: dropped
   sdd list   [feature|bug|test|refactor]             List specs
-  sdd version                                        Installed kit version
-  sdd self-update [X.Y.Z]                            Update this project's SDD files from GitHub (latest release by default); keeps CLAUDE.md, .claude/settings.json, .claude/agents/
 
 Flow:      new → ready → align → align-resolve → critique → verify → start → implement → done
 Lifecycle: draft → ready → active → done | blocked | dropped (CLAUDE.md §9.1)
@@ -1150,8 +1084,6 @@ main() {
     block)          cmd_block "$@" ;;
     drop)           cmd_drop "$@" ;;
     list)           cmd_list "$@" ;;
-    version|-v|--version) cmd_version ;;
-    self-update)    cmd_self_update "$@" ;;
     ""|"-h"|"--help"|help) usage ;;
     *) echo "Unknown command: $cmd"; usage; exit 1 ;;
   esac

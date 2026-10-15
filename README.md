@@ -6,23 +6,7 @@ A terminal-first CLI workflow — runs via scripts/sdd with no IDE plugin requir
 AI agent support through Claude Code and GitHub Copilot CLI integration
 Spec lifecycle management with draft → ready → active → done states
 Alignment gate and verify gate mechanisms ensuring quality control before any code is written
-Installed into each project straight from GitHub with one `curl … | bash` — no clone, no path, nothing system-wide
-
-# ⚡ Install
-
-From inside the project you want to add SDD to:
-
-```bash
-cd your-android-project
-curl -fsSL https://raw.githubusercontent.com/ataahmet/SddApp/main/install.sh | bash
-./scripts/sdd new feature "Biometric login"
-```
-
-Each project gets its own copy (`scripts/sdd`, `CLAUDE.md`, `.claude/`, `.github/agents/`,
-`specs/templates/`). Update a project with `./scripts/sdd self-update`. Full guide:
-[artifact/sdd-usage.md](artifact/sdd-usage.md) (installed into projects as `SDD-README.md`).
-Maintainers: [RELEASING.md](RELEASING.md).
-
+A portable artifact structure — integrates into existing projects with a single install.sh command
 🤖 Multi-agent architecture: Claude CLI & Copilot CLI, side by side.
 
 SDD is not locked to a single AI provider. The SDD_AGENT environment variable lets you choose your backend per command, and sdd sync-agents keeps agent definitions in sync across both platforms. Teams can run different specs with different agents in parallel — one agent per spec, ensuring consistency.
