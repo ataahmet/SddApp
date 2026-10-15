@@ -46,11 +46,11 @@ Each project gets its own copy, so two projects can run different SDD versions. 
 |--------|----------|--------------|
 | `--update` | — | refresh the kit, keep `CLAUDE.md`, `.claude/settings.json`, `.claude/agents/` (see [Updating the kit](#updating-the-kit)) |
 | `--force` | — | overwrite everything, customised files included |
-| `--version v0.2.0` | `SDD_VERSION` | a release tag (default `latest`), or a branch name such as `main` to install unreleased code |
+| `--version 0.2.0` | `SDD_VERSION` | a release (default `latest`), or a branch name such as `main` to install unreleased code |
 | `--dir <path>` | `SDD_PROJECT_DIR` | install into another repository instead of the one you are in |
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ataahmet/SddApp/main/install.sh | bash -s -- --version v0.2.0
+curl -fsSL https://raw.githubusercontent.com/ataahmet/SddApp/main/install.sh | bash -s -- --version 0.2.0
 ```
 
 **It refuses to overwrite.** It checks every file first, and if one already exists it stops before
@@ -79,7 +79,7 @@ Check the result. The project must be a git repository (`sdd start` creates a br
 
 ```bash
 ./scripts/sdd help            # command summary
-./scripts/sdd version         # installed kit version
+./scripts/sdd version         # installed kit version: 0.2.0 from a release, 0.2.0-dev+main.3f2a9c1 from a branch
 ./scripts/sdd list            # prints the header row, no specs yet
 git add CLAUDE.md SDD-README.md .claude .github scripts specs .gitignore
 ```
@@ -729,7 +729,7 @@ Agent runs never read from your terminal: their standard input is closed.
 ## Updating the kit
 
 From the project, either of these refreshes it to the latest release (or pass a version:
-`./scripts/sdd self-update v0.3.0`):
+`./scripts/sdd self-update 0.3.0`):
 
 ```bash
 ./scripts/sdd self-update

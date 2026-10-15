@@ -1,12 +1,17 @@
 #!/usr/bin/env bash
-# sdd-release — package the SDD kit that install.sh puts into a project.
+# sdd-release — version and package the SDD kit that install.sh puts into a project.
 #
-#   scripts/sdd-release [--version vX.Y.Z] [--out DIR]   → DIR/sdd.tar.gz (+ .sha256, + sdd-vX.Y.Z.tar.gz)
-#   scripts/sdd-release [--version REF]   --stage DIR    → the same layout, unpacked, in DIR
+#   scripts/sdd-release bump <patch|minor|major|X.Y.Z>   → VERSION updated, committed, tagged vX.Y.Z
+#   scripts/sdd-release [--version X.Y.Z] [--out DIR]   → DIR/sdd.tar.gz (+ .sha256, + sdd-X.Y.Z.tar.gz)
+#   scripts/sdd-release [--version X.Y.Z] --stage DIR   → the same layout, unpacked, in DIR
 #
-# The release workflow (.github/workflows/release.yml) runs the first form on
+# VERSION (repository root) is the single source of the version number. Without
+# --version the build is stamped VERSION when HEAD is the tag vVERSION, and
+# VERSION-dev+<commit> otherwise, so an unreleased build never passes for one.
+#
+# The release workflow (.github/workflows/release.yml) runs the --out form on
 # every v* tag and attaches the files to the GitHub release; install.sh
-# downloads them. install.sh runs the second form when it installs straight
+# downloads them. install.sh runs the --stage form when it installs straight
 # from a branch (--version main), so both paths produce the same layout:
 #
 #   sdd/
@@ -21,19 +26,81 @@ version=""
 out=""
 stage=""
 
+die() { echo "✗ $*" >&2; exit 1; }
+
+read_version_file() {
+  local v
+  [ -f "$ROOT/VERSION" ] || die "No VERSION file in $ROOT."
+  v="$(tr -d '[:space:]' < "$ROOT/VERSION")"
+  case "$v" in
+    [0-9]*.[0-9]*.[0-9]*) ;;
+    *) die "VERSION must be X.Y.Z, found '$v'." ;;
+  esac
+  echo "$v"
+}
+
+# VERSION, or VERSION-dev+<commit>[.dirty] when HEAD is not exactly that release.
+build_version() {
+  local base sha tag
+  base="$(read_version_file)"
+  tag="$(git -C "$ROOT" describe --exact-match --tags HEAD 2>/dev/null || true)"
+  if [ "$tag" = "v$base" ] && git -C "$ROOT" diff --quiet HEAD 2>/dev/null; then
+    echo "$base"
+    return
+  fi
+  sha="$(git -C "$ROOT" rev-parse --short=7 HEAD 2>/dev/null || echo unknown)"
+  git -C "$ROOT" diff --quiet HEAD 2>/dev/null || sha="$sha.dirty"
+  echo "$base-dev+$sha"
+}
+
+# bump <patch|minor|major|X.Y.Z>: writes VERSION, commits it and tags vX.Y.Z.
+# Pushing is left to you: the tag is what publishes.
+bump() {
+  local how="${1:-}" cur major minor patch next
+  cur="$(read_version_file)"
+  major="${cur%%.*}"; minor="${cur#*.}"; minor="${minor%%.*}"; patch="${cur##*.}"
+  case "$how" in
+    patch) next="$major.$minor.$((patch + 1))" ;;
+    minor) next="$major.$((minor + 1)).0" ;;
+    major) next="$((major + 1)).0.0" ;;
+    [0-9]*.[0-9]*.[0-9]*) next="${how#v}" ;;
+    v[0-9]*.[0-9]*.[0-9]*) next="${how#v}" ;;
+    *) die "Usage: scripts/sdd-release bump <patch|minor|major|X.Y.Z>   (VERSION is $cur)" ;;
+  esac
+  git -C "$ROOT" diff --quiet HEAD && [ -z "$(git -C "$ROOT" status --porcelain)" ] \
+    || die "Commit or stash your changes first — the release commit should contain only VERSION."
+  git -C "$ROOT" rev-parse -q --verify "refs/tags/v$next" >/dev/null \
+    && die "Tag v$next already exists."
+
+  printf '%s\n' "$next" > "$ROOT/VERSION"
+  git -C "$ROOT" add VERSION
+  git -C "$ROOT" commit -q -m "Release v$next"
+  git -C "$ROOT" tag -a "v$next" -m "sdd $next"
+  echo "✓ VERSION $cur → $next, committed and tagged v$next."
+  echo "  Publish it (the release workflow builds and uploads on the tag):"
+  echo "    git push origin HEAD v$next"
+}
+
+if [ "${1:-}" = "bump" ]; then
+  shift
+  bump "$@"
+  exit 0
+fi
+
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --version) version="${2:?--version needs a value}"; shift 2 ;;
     --out)     out="${2:?--out needs a directory}"; shift 2 ;;
     --stage)   stage="${2:?--stage needs a directory}"; shift 2 ;;
-    -h|--help) sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "Unknown argument: $1" >&2; exit 2 ;;
   esac
 done
 
 if [ -z "$version" ]; then
-  version="$(git -C "$ROOT" describe --tags --always --dirty 2>/dev/null || echo dev)"
+  version="$(build_version)"
 fi
+version="${version#v}"
 
 assemble() { # <dest>
   local dest="$1" path source
@@ -83,4 +150,4 @@ done
 
 echo "Built sdd $version:"
 echo "  $out/sdd.tar.gz            (stable name — install.sh downloads releases/latest/download/sdd.tar.gz)"
-echo "  $out/sdd-$version.tar.gz   (versioned — for pinned installs)"
+echo "  $out/sdd-$version.tar.gz   (versioned copy)"

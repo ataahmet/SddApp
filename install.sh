@@ -9,7 +9,7 @@
 #   --update          refresh the kit and KEEP the files you customise:
 #                       CLAUDE.md  .claude/settings.json  .claude/agents/
 #   --force           overwrite everything, customised files included
-#   --version <v>     SDD_VERSION      latest (default) | v0.2.0 | main (a branch, built from source)
+#   --version <v>     SDD_VERSION      latest (default) | 0.2.0 | main (a branch, built from source)
 #   --dir <path>      SDD_PROJECT_DIR  project to install into (default: the git repository you are in)
 #   SDD_REPO          GitHub repository to install from (default: ataahmet/SddApp)
 #   SDD_TARBALL       a URL or local path to install from instead (mirrors, testing)
@@ -199,14 +199,23 @@ main() {
   [ -n "$top" ] || die "The downloaded archive is empty."
   if [ -f "$top/manifest.txt" ] && [ -d "$top/payload" ]; then
     mv "$top" "$kit"                                                            # release
-  elif [ -f "$top/scripts/sdd-release" ]; then
-    bash "$top/scripts/sdd-release" --version "$version" --stage "$kit" >/dev/null   # source
+  elif [ -f "$top/scripts/sdd-release" ]; then                                 # source
+    # Stamp a branch build as <VERSION>-dev+<branch>.<commit>: GitHub's archive
+    # carries the commit id in its tar header, which git can read back.
+    local base commit
+    base="$(tr -d '[:space:]' < "$top/VERSION" 2>/dev/null || true)"
+    commit="$(gzip -dc "$work/kit.tar.gz" | git get-tar-commit-id 2>/dev/null || true)"
+    bash "$top/scripts/sdd-release" --stage "$kit" \
+      --version "${base:-0.0.0}-dev+$(printf '%s' "$version" | tr '/' '-')${commit:+.${commit:0:7}}" >/dev/null
   else
     die "The archive is neither an SDD release nor an SddApp source tree."
   fi
   local kit_version
   kit_version="$(tr -d '[:space:]' < "$kit/VERSION")"
-  [ -n "$ref" ] || ref="$kit_version"
+  [ -n "$ref" ] || ref="v$kit_version"
+
+  local previous=""
+  [ -f "$target/scripts/lib/VERSION" ] && previous="$(tr -d '[:space:]' < "$target/scripts/lib/VERSION")"
 
   # Pass 1 — plan and check everything before writing a single file.
   local plan entry rel missing="" conflicts=""
@@ -261,7 +270,13 @@ main() {
     grep -Fxq "$rule" "$gitignore" || printf '%s\n' "$rule" >> "$gitignore"
   done < "$kit/gitignore.sdd"
 
-  say "✓ SDD $kit_version installed in $target — $n_new added, $n_upd replaced, $n_kept kept"
+  if [ -z "$previous" ] || [ "$update$force" = "00" ]; then
+    say "✓ SDD $kit_version installed in $target — $n_new added, $n_upd replaced, $n_kept kept"
+  elif [ "$previous" = "$kit_version" ]; then
+    say "✓ SDD $kit_version — already up to date; kit files refreshed ($n_new added, $n_upd replaced, $n_kept kept)"
+  else
+    say "✓ SDD updated $previous → $kit_version in $target — $n_new added, $n_upd replaced, $n_kept kept"
+  fi
 
   if [ -n "$differs" ]; then
     say ""

@@ -1040,16 +1040,29 @@ cmd_list() {
 ###############################################################################
 # Kit version and self-update
 ###############################################################################
-# install.sh writes the installed kit version to scripts/lib/VERSION. The kit
-# repository itself has none, so it reports its git revision instead.
+# install.sh writes the installed kit version to scripts/lib/VERSION: X.Y.Z for
+# a release, X.Y.Z-dev+<branch>.<commit> for a branch install. In the kit
+# repository itself it is VERSION plus the checked-out commit.
 
 SDD_REPO="${SDD_REPO:-ataahmet/SddApp}"
 
 kit_version() {
+  local base sha
   if [ -f "$ROOT/scripts/lib/VERSION" ]; then
     tr -d '[:space:]' < "$ROOT/scripts/lib/VERSION"
+  elif [ -f "$ROOT/artifact/manifest.txt" ] && [ -f "$ROOT/VERSION" ]; then
+    # Same rule as scripts/sdd-release: plain VERSION only on its clean tag.
+    base="$(tr -d '[:space:]' < "$ROOT/VERSION")"
+    if [ "$(git -C "$ROOT" describe --exact-match --tags HEAD 2>/dev/null)" = "v$base" ] \
+       && git -C "$ROOT" diff --quiet HEAD 2>/dev/null; then
+      echo "$base"
+      return
+    fi
+    sha="$(git -C "$ROOT" rev-parse --short=7 HEAD 2>/dev/null || echo unknown)"
+    git -C "$ROOT" diff --quiet HEAD 2>/dev/null || sha="$sha.dirty"
+    echo "$base-dev+$sha"
   else
-    echo "dev-$(git -C "$ROOT" describe --tags --always --dirty 2>/dev/null || echo unknown)"
+    echo "unknown (installed before versioning; ./scripts/sdd self-update records it)"
   fi
 }
 
@@ -1112,7 +1125,7 @@ Usage:
   sdd drop   <spec.md> "<reason>"                    status: dropped
   sdd list   [feature|bug|test|refactor]             List specs
   sdd version                                        Installed kit version
-  sdd self-update [vX.Y.Z]                           Update this project's SDD files from GitHub (latest release by default); keeps CLAUDE.md, .claude/settings.json, .claude/agents/
+  sdd self-update [X.Y.Z]                            Update this project's SDD files from GitHub (latest release by default); keeps CLAUDE.md, .claude/settings.json, .claude/agents/
 
 Flow:      new → ready → align → align-resolve → critique → verify → start → implement → done
 Lifecycle: draft → ready → active → done | blocked | dropped (CLAUDE.md §9.1)

@@ -1,5 +1,6 @@
-# Publishes the SDD kit on every version tag:
-#   git tag v0.2.0 && git push origin v0.2.0
+# Publishes the SDD kit on every version tag. Tag with
+#   scripts/sdd-release bump <patch|minor|major>   (updates VERSION, commits, tags)
+#   git push origin HEAD v0.2.0
 # install.sh then picks it up as `latest` (releases/latest/download/sdd.tar.gz).
 name: release
 
@@ -19,15 +20,24 @@ jobs:
       - name: Lint the installer and the CLI
         run: shellcheck -S error install.sh scripts/sdd scripts/sdd-release scripts/lib/*.sh
 
+      - name: Check the tag matches VERSION
+        run: |
+          v="$(tr -d '[:space:]' < VERSION)"
+          if [ "$GITHUB_REF_NAME" != "v$v" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match VERSION ($v). Tag releases with: scripts/sdd-release bump <patch|minor|major>"
+            exit 1
+          fi
+          echo "SDD_VERSION=$v" >> "$GITHUB_ENV"
+
       - name: Build the kit
-        run: bash scripts/sdd-release --version "$GITHUB_REF_NAME" --out dist
+        run: bash scripts/sdd-release --version "$SDD_VERSION" --out dist
 
       - name: Smoke-test install → new → list → update in a fresh project
         run: |
           set -euo pipefail
           proj="$RUNNER_TEMP/proj" && mkdir -p "$proj" && cd "$proj" && git init -q
           SDD_TARBALL="$GITHUB_WORKSPACE/dist/sdd.tar.gz" bash "$GITHUB_WORKSPACE/install.sh"
-          ./scripts/sdd version | grep -F "$GITHUB_REF_NAME"
+          ./scripts/sdd version | grep -Fx "sdd $SDD_VERSION"
           ./scripts/sdd new feature "Smoke test" < /dev/null
           ./scripts/sdd list | grep -F "001-smoke-test"
           SDD_TARBALL="$GITHUB_WORKSPACE/dist/sdd.tar.gz" bash "$GITHUB_WORKSPACE/install.sh" --update
@@ -37,4 +47,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" dist/* \
-            --title "sdd $GITHUB_REF_NAME" --generate-notes
+            --title "sdd $SDD_VERSION" --generate-notes
