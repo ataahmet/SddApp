@@ -6,7 +6,7 @@ The rules above are authoritative for this repository; do not restate or duplica
 
 ## Spec-first rule (SDD)
 
-This repository follows Spec-Driven Development (see CLAUDE.md §9). Before writing or editing any
+This repository follows Spec-Driven Development (see SDD-README.md). Before writing or editing any
 code:
 
 1. Read the relevant spec under `specs/` in full.

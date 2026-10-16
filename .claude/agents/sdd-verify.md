@@ -48,7 +48,7 @@ its lifecycle. That state is written and enforced by `scripts/sdd`, not by you:
   `<spec-dir>/verify/`.
 
 Their values — and whether they agree with each other — are **never** a finding: not a FAIL
-bullet, not a `## Suspicious` item. The gate chain in CLAUDE.md §9.1 describes the process the
+bullet, not a `## Suspicious` item. The gate chain in SDD-README.md describes the process the
 script runs; it is not a rule the spec's content can violate, and `sdd start` / `sdd implement`
 already refuse to run when a gate is not met. Do not tell the user to update these fields or to
 re-run a command because of them.

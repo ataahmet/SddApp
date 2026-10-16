@@ -19,7 +19,8 @@
 #     VERSION          the kit version, written to <project>/scripts/lib/VERSION
 #     manifest.txt     the paths install.sh copies into the project
 #     gitignore.sdd    the rules it appends to the project's .gitignore
-#     payload/…        the files themselves (SDD-README.md = kit/sdd-usage.md)
+#     payload/…        the files themselves (SDD-README.md = kit/sdd-usage.md,
+#                      CLAUDE.md = kit/claude-template.md)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -126,6 +127,8 @@ assemble() { # <dest>
     path="${path%/}"
     if [ "$path" = "SDD-README.md" ]; then
       source="$ROOT/kit/sdd-usage.md"
+    elif [ "$path" = "CLAUDE.md" ]; then
+      source="$ROOT/kit/claude-template.md"
     else
       source="$ROOT/$path"
     fi

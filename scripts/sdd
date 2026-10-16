@@ -3,7 +3,7 @@
 # Flow: new → ready → align → align-resolve → critique(loop) → verify → start(branch) → implement → done
 # Lifecycle: draft → ready → active → done | blocked | dropped
 # Gate: verify must PASS (no open questions) before implement can run.
-# Details: CLAUDE.md §9 / §9.1, SDD-README.md (kit/sdd-usage.md in the kit repo)
+# Details: SDD-README.md (kit/sdd-usage.md in the kit repo)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -25,9 +25,9 @@ source "$ROOT/scripts/lib/critique.sh"
 SDD_AGENT="${SDD_AGENT:-auto}"
 
 # Branch prefix for `sdd start`: branches are <prefix>/{task_id}-{task_name}
-# (CLAUDE.md §9.1). The default is 'sdd', not 'main': git stores branch names as
-# paths under refs/heads/, so 'main/001-x' can never be created while a branch
-# called 'main' exists — which is nearly every repository.
+# (SDD-README.md, "8. Open the branch"). The default is 'sdd', not 'main': git
+# stores branch names as paths under refs/heads/, so 'main/001-x' can never be
+# created while a branch called 'main' exists — which is nearly every repository.
 SDD_BRANCH_PREFIX="${SDD_BRANCH_PREFIX:-sdd}"
 
 # Setup guide named in error messages: 'SDD-README.md' in an installed project,
@@ -735,7 +735,7 @@ cmd_align_resolve() {
   echo "  Next: sdd critique $spec   (then: sdd verify $spec)"
 }
 
-# draft → ready gate: are the required sections from CLAUDE.md §9.1 filled?
+# draft → ready gate: are the required sections (SDD-README.md, "3. Mark it ready") filled?
 cmd_ready() {
   local spec="$1"
   [ -f "$spec" ] || { echo "Spec not found: $spec"; exit 1; }
@@ -747,7 +747,7 @@ cmd_ready() {
     *) echo "ready only works from draft (current: $status)."; exit 1 ;;
   esac
 
-  # TODO: add required-section checks here via section_filled() as per CLAUDE.md §9.1
+  # TODO: add required-section checks here via section_filled() as per SDD-README.md ("3. Mark it ready")
   fm_set "$spec" status "ready"
   fm_set "$spec" updated "$(today)"
   echo "✓ status: ready"
@@ -1145,7 +1145,7 @@ Usage:
   sdd self-update [X.Y.Z]                            Update this project's SDD files from GitHub (latest release by default); keeps CLAUDE.md, .claude/settings.json, .claude/agents/, scripts/lib/deny-list.txt
 
 Flow:      new → ready → align → align-resolve → critique → verify → start → implement → done
-Lifecycle: draft → ready → active → done | blocked | dropped (CLAUDE.md §9.1)
+Lifecycle: draft → ready → active → done | blocked | dropped (SDD-README.md)
 Branch:    <prefix>/{task_id}-{task_name} (e.g. sdd/001-biometric-login); prefix = SDD_BRANCH_PREFIX, default 'sdd'
 EOF
 }
