@@ -334,22 +334,25 @@ model_for_role() { # <role> <backend>
 # Resolves SDD_AGENT (claude|copilot|auto) to a concrete backend by binary
 # presence only — no runtime fallback on auth/quota failure (D6). On success,
 # prints the backend name ("claude"/"copilot") on stdout. On failure, prints a
-# neutral English "CLI not found" message on stderr and returns 1.
+# neutral English "CLI not found" message on stderr and returns 1. It also
+# fails when the user's deny list has not been applied to that backend
+# (require_user_deny), so no agent ever runs without it.
 resolve_agent_backend() {
+  local backend
   case "$SDD_AGENT" in
     claude)
       driver_claude_available || { agent_not_found_message "claude"; return 1; }
-      echo "claude"
+      backend="claude"
       ;;
     copilot)
       driver_copilot_available || { agent_not_found_message "copilot"; return 1; }
-      echo "copilot"
+      backend="copilot"
       ;;
     auto)
       if driver_copilot_available; then
-        echo "copilot"
+        backend="copilot"
       elif driver_claude_available; then
-        echo "claude"
+        backend="claude"
       else
         agent_not_found_message "auto"
         return 1
@@ -360,6 +363,8 @@ resolve_agent_backend() {
       return 1
       ;;
   esac
+  require_user_deny "$backend" || return 1
+  echo "$backend"
 }
 
 agent_not_found_message() {
@@ -412,6 +417,7 @@ run_agent() {
   local backend model
   backend="$(resolve_agent_backend)" || return 1
   model="$(model_for_role "$role" "$backend")" || return 1
+  warn_user_deny_stale "$backend"
   case "$backend" in
     claude)
       driver_claude_run_agent "$agent" "$mode" "$model" "$prompt"
@@ -453,8 +459,6 @@ run_task() { # <spec> <task>
 
 AGENTS_SRC_DIR="$ROOT/.claude/agents"
 AGENTS_DST_DIR="$ROOT/.github/agents"
-DENY_LIST_FILE="$ROOT/scripts/lib/deny-list.txt"
-CLAUDE_SETTINGS_FILE="$ROOT/.claude/settings.json"
 
 # Reads a frontmatter field, scoped to the first '---'...'---' block only
 # (unlike fm_get, which is not frontmatter-scoped and could match a body line).
@@ -552,78 +556,158 @@ cmd_sync_agents() {
   done
   [ "$had_files" -eq 1 ] || { echo "No agent files found in $AGENTS_SRC_DIR"; exit 1; }
   echo "✓ .github/agents/ regenerated."
-
-  sync_claude_settings_deny || exit 1
 }
 
 ###############################################################################
-# Deny-list sync: scripts/lib/deny-list.txt → .claude/settings.json "deny" (T10)
+# Deny list: kept in the project, under ./sddapp (git-ignored)
 ###############################################################################
-# scripts/lib/deny-list.txt is the single, backend-neutral deny source (D3).
-# This regenerates only the "deny" array of .claude/settings.json from it;
-# "allow"/"ask" in that file are hand-maintained and are never touched here.
-# The Copilot-side expansion of the same file (--deny-tool / --add-dir) is
-# T5's driver, not this generator.
+# The files and commands no agent may touch live in the project root under
+# ./sddapp, which is git-ignored, so each user keeps their own copy and nothing
+# is written outside the project. `sdd setup-user` creates the list there with
+# the kit's defaults, the user fills it in, and setup-user turns it into what
+# each backend takes for the runs scripts/sdd starts:
+#
+#   sddapp/deny-list.txt            the list (the user's; never overwritten)
+#   sddapp/claude-settings.json     Claude Code: {"permissions":{"deny":[...]}},
+#                                   passed to every run as --settings
+#   sddapp/copilot-plugin/          Copilot CLI: a plugin whose preToolUse hook
+#     plugin.json, hooks.json       (scripts/lib/copilot-deny-hook.sh) reads the
+#                                   list on every tool call; passed to every run
+#                                   as --plugin-dir. Copilot's --deny-tool has no
+#                                   read(path) rule kind (`copilot help
+#                                   permissions`). The list's shell commands also
+#                                   go to each run as --deny-tool (driver-copilot.sh).
+#
+# Neither CLI reads ./sddapp on its own, so these rules hold for the runs
+# scripts/sdd starts, not for a claude/copilot session opened by hand.
 
-# Translates one backend-neutral deny-list.txt entry into the Claude
-# permission-string syntax used in .claude/settings.json's "deny" array.
+SDD_DIR="$ROOT/sddapp"
+SDD_DENY_LIST="$SDD_DIR/deny-list.txt"
+SDD_DENY_LIST_DEFAULT="$ROOT/scripts/lib/deny-list.default.txt"
+SDD_CLAUDE_SETTINGS="$SDD_DIR/claude-settings.json"
+SDD_COPILOT_PLUGIN="$SDD_DIR/copilot-plugin"
+COPILOT_HOOK_SRC="$ROOT/scripts/lib/copilot-deny-hook.sh"
+
+# The list's entries, one per line: comments and blank lines dropped, ends trimmed.
+deny_entries() {
+  [ -f "$SDD_DENY_LIST" ] || return 0
+  sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' "$SDD_DENY_LIST" | grep -v -e '^$' -e '^#' || true
+}
+
+# <text> as a JSON string literal (quotes and backslashes escaped).
+json_str() { # <text>
+  printf '"%s"' "$(printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')"
+}
+
+# One list entry → one Claude Code permission rule. A bare name follows
+# gitignore rules and matches at any depth under the working directory, which
+# scripts/sdd sets to the project root for every run.
 deny_entry_to_claude() { # <entry>
-  local entry="$1"
-  case "$entry" in
-    *" "*) printf 'Bash(%s *)' "$entry" ;;      # multi-word → shell command
-    *"*"*) printf 'Read(**/%s)' "$entry" ;;     # glob → path narrowed anywhere
-    *)     printf 'Read(./%s)' "$entry" ;;      # literal → repo-root path
+  case "$1" in
+    *" "*) printf 'Bash(%s *)' "$1" ;;   # several words → a shell command
+    *)     printf 'Read(%s)' "$1" ;;     # a file name or glob; also blocks Edit/Write there
   esac
 }
 
-# Regenerates the "deny": [ ... ] array in .claude/settings.json from
-# scripts/lib/deny-list.txt, leaving every other line of the file untouched.
-sync_claude_settings_deny() {
-  [ -f "$DENY_LIST_FILE" ] || { echo "sdd sync-agents: $DENY_LIST_FILE not found" >&2; return 1; }
-  [ -f "$CLAUDE_SETTINGS_FILE" ] || { echo "sdd sync-agents: $CLAUDE_SETTINGS_FILE not found" >&2; return 1; }
+# Writes sddapp/claude-settings.json from the list. The file is generated:
+# scripts/sdd owns it and rewrites it whole.
+claude_write_settings() {
+  local e first=1
+  {
+    printf '{\n  "permissions": {\n    "deny": ['
+    while IFS= read -r e; do
+      [ "$first" -eq 1 ] && first=0 || printf ','
+      printf '\n      %s' "$(json_str "$(deny_entry_to_claude "$e")")"
+    done < <(deny_entries)
+    printf '\n    ]\n  }\n}\n'
+  } > "$SDD_CLAUDE_SETTINGS"
+  echo "✓ Claude Code: ${SDD_CLAUDE_SETTINGS#"$ROOT"/} — passed to every run as --settings"
+}
 
-  local line entry entries=()
-  while IFS= read -r line || [ -n "$line" ]; do
-    line="$(echo "$line" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
-    [ -z "$line" ] && continue
-    case "$line" in "#"*) continue ;; esac
-    entry="$(deny_entry_to_claude "$line")"
-    entries+=("$entry")
-  done < "$DENY_LIST_FILE"
+# Writes the Copilot plugin: a manifest and a preToolUse hook that runs the
+# kit's hook script with the list's path in its environment.
+copilot_write_plugin() {
+  mkdir -p "$SDD_COPILOT_PLUGIN"
+  printf '{\n  "name": "sdd-deny",\n  "version": "1.0.0",\n  "description": "SDD deny list for this project (generated by ./scripts/sdd setup-user)",\n  "hooks": "hooks.json"\n}\n' \
+    > "$SDD_COPILOT_PLUGIN/plugin.json"
+  printf '{\n  "version": 1,\n  "hooks": {\n    "preToolUse": [\n      {\n        "type": "command",\n        "bash": %s,\n        "env": { "SDD_DENY_LIST": %s },\n        "timeoutSec": 10\n      }\n    ]\n  }\n}\n' \
+    "$(json_str "bash $(printf '%q' "$COPILOT_HOOK_SRC")")" "$(json_str "$SDD_DENY_LIST")" \
+    > "$SDD_COPILOT_PLUGIN/hooks.json"
+  echo "✓ Copilot CLI: ${SDD_COPILOT_PLUGIN#"$ROOT"/}/ — passed to every run as --plugin-dir"
+}
 
-  [ "${#entries[@]}" -gt 0 ] || { echo "sdd sync-agents: $DENY_LIST_FILE has no entries" >&2; return 1; }
-
-  # Rewritten with plain bash (no awk -v with an embedded-newline string —
-  # the macOS-shipped one-true-awk mangles that), so only the "deny": [ ... ]
-  # block is replaced and every other line, including "allow"/"ask", is
-  # copied through verbatim.
-  local tmp raw_line in_deny=0 i last
-  tmp="$(mktemp)"
-  last=$(( ${#entries[@]} - 1 ))
-  while IFS= read -r raw_line || [ -n "$raw_line" ]; do
-    if [ "$in_deny" -eq 0 ] && [[ "$raw_line" =~ ^[[:space:]]*\"deny\":[[:space:]]*\[ ]]; then
-      printf '%s\n' "$raw_line" >> "$tmp"
-      for i in "${!entries[@]}"; do
-        if [ "$i" -lt "$last" ]; then
-          printf '      "%s",\n' "${entries[$i]}" >> "$tmp"
-        else
-          printf '      "%s"\n' "${entries[$i]}" >> "$tmp"
-        fi
-      done
-      in_deny=1
-      continue
-    fi
-    if [ "$in_deny" -eq 1 ]; then
-      if [[ "$raw_line" =~ ^[[:space:]]*\] ]]; then
-        printf '%s\n' "$raw_line" >> "$tmp"
-        in_deny=0
+# Called before any agent runs (from resolve_agent_backend): refuses to start
+# a backend the project's deny list has not been applied to.
+require_user_deny() { # <backend>
+  if [ ! -f "$SDD_DENY_LIST" ]; then
+    echo "✗ No deny list at sddapp/deny-list.txt. Required: ./scripts/sdd setup-user (it creates the list with default entries; fill it in, then run it again)" >&2
+    return 1
+  fi
+  case "$1" in
+    claude)
+      [ -f "$SDD_CLAUDE_SETTINGS" ] && return 0
+      echo "✗ The deny list is not applied for Claude Code yet (sddapp/claude-settings.json). Run: ./scripts/sdd setup-user" >&2
+      ;;
+    copilot)
+      # hooks.json names the hook by absolute path: a moved project needs a re-run.
+      if [ -f "$SDD_COPILOT_PLUGIN/plugin.json" ] \
+         && grep -qF "$(json_str "bash $(printf '%q' "$COPILOT_HOOK_SRC")")" "$SDD_COPILOT_PLUGIN/hooks.json" 2>/dev/null; then
+        return 0
       fi
-      continue
-    fi
-    printf '%s\n' "$raw_line" >> "$tmp"
-  done < "$CLAUDE_SETTINGS_FILE"
-  mv "$tmp" "$CLAUDE_SETTINGS_FILE"
-  echo "✓ .claude/settings.json 'deny' array regenerated from ${DENY_LIST_FILE#$ROOT/}."
+      echo "✗ The deny list is not applied for Copilot CLI yet, or the project moved (sddapp/copilot-plugin/). Run: ./scripts/sdd setup-user" >&2
+      ;;
+  esac
+  return 1
+}
+
+# Called from run_agent, once per command: warns when the list changed after
+# the last setup-user. (Copilot's hook reads the list on every call, so only
+# Claude Code's generated settings can lag behind it.)
+USER_DENY_WARNED=0
+warn_user_deny_stale() { # <backend>
+  [ "$USER_DENY_WARNED" -eq 0 ] || return 0
+  USER_DENY_WARNED=1
+  if [ "$1" = "claude" ] && [ "$SDD_DENY_LIST" -nt "$SDD_CLAUDE_SETTINGS" ]; then
+    echo "⚠ sddapp/deny-list.txt changed after the last 'sdd setup-user'; Claude Code still gets the old rules. Run: ./scripts/sdd setup-user" >&2
+  fi
+}
+
+# setup-user: creates sddapp/deny-list.txt with the defaults if there is none,
+# then writes what Claude Code and Copilot CLI take from it. Safe to re-run.
+cmd_setup_user() {
+  # The list always starts from the kit's defaults; the user then fills it in.
+  # A project's scripts/lib/deny-list.txt from SDD 0.3 or earlier is never read.
+  local created=0
+  mkdir -p "$SDD_DIR"
+  if [ ! -f "$SDD_DENY_LIST" ]; then
+    cp "$SDD_DENY_LIST_DEFAULT" "$SDD_DENY_LIST"
+    created=1
+    echo "→ Created sddapp/deny-list.txt with the default entries."
+  fi
+  local n
+  n="$(deny_entries | wc -l | tr -d '[:space:]')"
+  [ "$n" -gt 0 ] || { echo "✗ sddapp/deny-list.txt has no entries." >&2; exit 1; }
+  echo "→ Applying $n entr$( [ "$n" -eq 1 ] && echo y || echo ies) from sddapp/deny-list.txt"
+
+  claude_write_settings
+  copilot_write_plugin
+
+  if ! git -C "$ROOT" check-ignore -q "$SDD_DENY_LIST" 2>/dev/null; then
+    echo
+    echo "⚠ sddapp/ is not git-ignored. Add this line to .gitignore so nobody commits their list: sddapp/"
+  fi
+  if [ -f "$ROOT/scripts/lib/deny-list.txt" ]; then
+    echo
+    echo "⚠ scripts/lib/deny-list.txt is left from SDD 0.3 or earlier and is not used; delete it."
+  fi
+  echo
+  if [ "$created" -eq 1 ]; then
+    echo "Now fill in sddapp/deny-list.txt: it holds only the defaults. Under \"# Your entries\","
+    echo "add every file and command of this project that no agent may touch, one per line,"
+    echo "then run ./scripts/sdd setup-user again."
+  else
+    echo "Edit sddapp/deny-list.txt any time, then run ./scripts/sdd setup-user again."
+  fi
 }
 
 ###############################################################################
@@ -1083,9 +1167,9 @@ download() { # <url> <file>
 }
 
 # Re-runs the remote installer on this project with --update: the kit's files
-# are refreshed; CLAUDE.md, .claude/settings.json, .claude/agents/ and
-# scripts/lib/deny-list.txt are kept. The installer swaps each file in by
-# rename, so replacing this running script is safe.
+# are refreshed; CLAUDE.md, .claude/settings.json and .claude/agents/ are
+# kept. The installer swaps each file in by rename, so replacing this running
+# script is safe.
 #
 # The installer comes from the release being installed (an asset since 0.2.0),
 # so a project only runs installer code that shipped with that kit; a branch
@@ -1136,13 +1220,14 @@ Usage:
   sdd verify <spec.md>                               Mandatory gate: check spec vs CLAUDE.md → verify: passed/failed
   sdd implement <spec.md> [Task]                     Implement a task; omit Task to implement every open (unticked) task in order (active+branch, alignment: resolved required)
   sdd fix-ktlint [gradle-task]                       Fix ktlint violations with agent (default: app:ktlint)
-  sdd sync-agents                                    Regenerate .github/agents/*.agent.md from .claude/agents/*.md, and .claude/settings.json's "deny" array from scripts/lib/deny-list.txt
+  sdd sync-agents                                    Regenerate .github/agents/*.agent.md from .claude/agents/*.md
+  sdd setup-user                                     REQUIRED once per project: create sddapp/deny-list.txt with defaults and apply it to Claude Code and Copilot CLI; fill in the list, then run it again
   sdd done   <spec.md>                               Quality gates + status: done
   sdd block  <spec.md> "<reason>"                    status: blocked
   sdd drop   <spec.md> "<reason>"                    status: dropped
   sdd list   [feature|bug|test|refactor]             List specs
   sdd version                                        Installed kit version
-  sdd self-update [X.Y.Z]                            Update this project's SDD files from GitHub (latest release by default); keeps CLAUDE.md, .claude/settings.json, .claude/agents/, scripts/lib/deny-list.txt
+  sdd self-update [X.Y.Z]                            Update this project's SDD files from GitHub (latest release by default); keeps CLAUDE.md, .claude/settings.json, .claude/agents/
 
 Flow:      new → ready → align → align-resolve → critique → verify → start → implement → done
 Lifecycle: draft → ready → active → done | blocked | dropped (SDD-README.md)
@@ -1163,6 +1248,7 @@ main() {
     verify)         cmd_verify "$@" ;;
     fix-ktlint)     cmd_fix_ktlint "$@" ;;
     sync-agents)    cmd_sync_agents "$@" ;;
+    setup-user)     cmd_setup_user "$@" ;;
     done)           cmd_done "$@" ;;
     block)          cmd_block "$@" ;;
     drop)           cmd_drop "$@" ;;

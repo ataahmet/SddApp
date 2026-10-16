@@ -42,6 +42,12 @@ jobs:
           ./scripts/sdd version | grep -Fx "sdd $KIT_VERSION"
           ./scripts/sdd new feature "Smoke test" < /dev/null
           ./scripts/sdd list | grep -F "001-smoke-test"
+          ./scripts/sdd setup-user
+          git check-ignore -q sddapp/deny-list.txt
+          jq -e '.permissions.deny | index("Read(.env)")' sddapp/claude-settings.json
+          jq -e '.hooks == "hooks.json"' sddapp/copilot-plugin/plugin.json
+          echo '{"toolArgs":{"path":"app/local.properties"}}' | bash scripts/lib/copilot-deny-hook.sh | jq -e '.permissionDecision == "deny"'
+          test -z "$(echo '{"toolArgs":{"path":"app/Main.kt"}}' | bash scripts/lib/copilot-deny-hook.sh)"
           SDD_TARBALL="$GITHUB_WORKSPACE/dist/sdd.tar.gz" bash "$GITHUB_WORKSPACE/dist/install.sh" --update
 
       - name: Publish the GitHub release

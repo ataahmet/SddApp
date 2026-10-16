@@ -36,7 +36,7 @@ The installer downloads the latest release, checks its SHA-256, and then
   `SDD-README.md` (this guide), `.claude/`, `.github/agents/`, `.github/copilot-instructions.md`,
   `scripts/`, `specs/templates/` — every path listed in the kit's `manifest.txt`;
 - writes the installed version to `scripts/lib/VERSION`;
-- appends the four `specs/` rules to the project's `.gitignore` (see [Where specs live](#where-specs-live));
+- appends the four `specs/` rules and `sddapp/` to the project's `.gitignore` (see [Where specs live](#where-specs-live));
 - marks `scripts/sdd` executable.
 
 Each project gets its own copy, so two projects can run different SDD versions. Options go after
@@ -44,7 +44,7 @@ Each project gets its own copy, so two projects can run different SDD versions. 
 
 | Option | Variable | What it does |
 |--------|----------|--------------|
-| `--update` | — | refresh the kit, keep `CLAUDE.md`, `.claude/settings.json`, `.claude/agents/`, `scripts/lib/deny-list.txt` (see [Updating the kit](#updating-the-kit)) |
+| `--update` | — | refresh the kit, keep `CLAUDE.md`, `.claude/settings.json`, `.claude/agents/` (see [Updating the kit](#updating-the-kit)) |
 | `--force` | — | overwrite everything, customised files included |
 | `--version 0.2.0` | `SDD_VERSION` | a release (default `latest`), or a branch name such as `main` to install unreleased code |
 | `--dir <path>` | `SDD_PROJECT_DIR` | install into another repository instead of the one you are in |
@@ -81,6 +81,8 @@ Check the result. The project must be a git repository (`sdd start` creates a br
 ./scripts/sdd help            # command summary
 ./scripts/sdd version         # installed kit version: 0.2.0 from a release, 0.2.0-dev+main.3f2a9c1 from a branch
 ./scripts/sdd list            # prints the header row, no specs yet
+./scripts/sdd setup-user      # REQUIRED: creates sddapp/deny-list.txt with defaults
+                              # fill it in, then run setup-user again
 git add CLAUDE.md SDD-README.md .claude .github scripts specs .gitignore
 ```
 
@@ -166,6 +168,61 @@ Two rules of thumb: keep it short, because the longer `CLAUDE.md` gets the less 
 follow it; and write rules as decisions rather than descriptions ("DI: Hilt, Koin forbidden", not
 "we mostly use Hilt"). The agent definitions under `.claude/agents/` are stack-independent and
 usually need no change; if you do edit one, run `./scripts/sdd sync-agents` afterwards.
+
+### 7. Your deny list — `setup-user`
+
+**Required before any agent command.** The files and commands no agent may touch are kept in the
+project root, under `sddapp/`. The installer adds `sddapp/` to `.gitignore`, so each user keeps
+their own list there and nothing is written outside the project. Agent commands (`align`,
+`critique`, `verify`, `implement`, `fix-ktlint`) refuse to run until you have done this:
+
+1. Create the list and apply its defaults:
+
+   ```bash
+   ./scripts/sdd setup-user
+   ```
+
+   The first run creates `sddapp/deny-list.txt` from the kit's defaults
+   (`scripts/lib/deny-list.default.txt`): `secrets.properties`, `local.properties`, `.env`,
+   `*.jks`, `*.keystore` and `git push --force`.
+2. **Fill in the list.** The defaults are only a starting point. Open `sddapp/deny-list.txt` and
+   add, under `# Your entries`, every file and command of this project that no agent may read,
+   change or run. One entry per line: a file name or glob (`local.properties`, `*.jks`), matched at
+   any depth under the project, or a shell command prefix (`git push --force`).
+3. Apply it:
+
+   ```bash
+   ./scripts/sdd setup-user        # again after every later edit too
+   ```
+
+The list is yours from its first run and is never overwritten, not by setup-user and not by a kit
+update. A project's `scripts/lib/deny-list.txt` from SDD 0.3 or earlier is never read: put the
+entries you still need into `sddapp/deny-list.txt` by hand, then delete that file.
+
+What setup-user writes next to the list, for the runs `scripts/sdd` starts:
+
+```
+sddapp/
+├── deny-list.txt            # your list
+├── claude-settings.json     # Claude Code: one deny rule per entry, passed to every run as --settings
+└── copilot-plugin/          # Copilot CLI: passed to every run as --plugin-dir
+    ├── plugin.json
+    └── hooks.json           # preToolUse hook → scripts/lib/copilot-deny-hook.sh
+```
+
+- **Claude Code:** each entry becomes `Read(<file>)` or `Bash(<command> *)` in
+  `sddapp/claude-settings.json`. setup-user rewrites this file whole; edit the list, not this file.
+- **Copilot CLI:** its `--deny-tool` has no rule for reading a file, so the plugin's `preToolUse`
+  hook reads the list on every tool call and refuses a call whose arguments name a listed file. With
+  `jq` on `PATH` it skips file contents being written; without it, it scans the whole call. The
+  list's shell commands also go to every run as `--deny-tool`.
+- **Only runs that `scripts/sdd` starts get these rules.** Neither CLI reads `sddapp/` on its own,
+  so a `claude` or `copilot` session you open by hand, or Xcode's Claude Agent, does not.
+
+Agent commands refuse to run until the list has been applied to the backend they use, and warn when
+the list changed after the last setup-user (Claude Code; Copilot's hook reads the list live). What a
+deny rule cannot see: a command that reaches a file without naming it (`grep -r x .`, a script that
+opens files itself).
 
 ## Project prerequisites (Gradle)
 
@@ -262,12 +319,16 @@ specs/features
 specs/bugs
 specs/refactors
 specs/tests
+sddapp/
 ```
+
+`sddapp/` holds each user's deny list (see [7. Your deny list](#7-your-deny-list--setup-user)); keep
+it out of version control.
 
 Specs are therefore local working files: `git add specs/features/...` is refused, and the
 `critique/` and `verify/` report folders next to each spec stay local too. The templates under
 `specs/templates/` are committed. The commit format still names the spec path in its body, as a
-reference to the local file. If your team wants specs under version control, delete those four
+reference to the local file. If your team wants specs under version control, delete the four `specs/`
 lines from `.gitignore` and commit each spec with its code.
 
 ## Folder structure
@@ -277,7 +338,7 @@ project-root/
 ├── SDD-README.md                  # this guide
 ├── CLAUDE.md                      # architecture rules (tool-independent, single source)
 ├── .claude/
-│   ├── settings.json              # project permissions; "deny" is GENERATED from deny-list.txt
+│   ├── settings.json              # project permissions (allow / ask); denies live in sddapp/
 │   └── agents/                    # agent definitions — the SINGLE SOURCE, edited by hand
 │       ├── sdd-align.md           # used by `sdd align`
 │       ├── sdd-critique.md        # used by `sdd critique` (reviewer half)
@@ -294,7 +355,12 @@ project-root/
 │       ├── critique.sh            # critique-to-action loop
 │       ├── driver-claude.sh       # Claude Code driver
 │       ├── driver-copilot.sh      # Copilot CLI driver
-│       └── deny-list.txt          # single source for secret-file / destructive-command denies
+│       ├── copilot-deny-hook.sh   # Copilot preToolUse hook, run through sddapp/copilot-plugin/
+│       └── deny-list.default.txt  # first content of sddapp/deny-list.txt
+├── sddapp/                        # created by `sdd setup-user`, git-ignored (see "7. Your deny list")
+│   ├── deny-list.txt              # yours: fill it in
+│   ├── claude-settings.json       # GENERATED, passed to Claude runs as --settings
+│   └── copilot-plugin/            # GENERATED, passed to Copilot runs as --plugin-dir
 └── specs/
     ├── templates/                 # feature.md, bug.md, refactor.md, test.md (committed)
     └── features/                  # created by `sdd new`, git-ignored (see "Where specs live")
@@ -619,10 +685,21 @@ reset `blocked_reason: ~`.
 ./scripts/sdd sync-agents
 ```
 
-Run it after editing `.claude/agents/*.md` or `scripts/lib/deny-list.txt`. It regenerates
-`.github/agents/*.agent.md` for Copilot (tool names translated, `model:` and `color:` dropped) and
-the `deny` array of `.claude/settings.json`; `allow` and `ask` are left as they are. A second run
-changes nothing. The Copilot driver warns when `.github/agents/` is out of date.
+Run it after editing `.claude/agents/*.md`. It regenerates `.github/agents/*.agent.md` for Copilot
+(tool names translated, `model:` and `color:` dropped). A second run changes nothing. The Copilot
+driver warns when `.github/agents/` is out of date.
+
+### `setup-user`
+
+```bash
+./scripts/sdd setup-user
+```
+
+Required before any agent command. Creates `sddapp/deny-list.txt` with the default entries if the
+project has none, and writes what Claude Code and Copilot CLI take from it into `sddapp/`; see
+[7. Your deny list](#7-your-deny-list--setup-user). After the first run, fill in the list and run it
+again; run it again after every later edit, and after moving the project to another folder. A
+second run with the same list changes nothing.
 
 ## Typical workflow
 
@@ -630,6 +707,9 @@ changes nothing. The Copilot driver warns when `.github/agents/` is out of date.
 # 0. Once per machine and project
 claude --version && claude auth status
 claude                      # inside the project: accept the trust prompt, then exit
+./scripts/sdd setup-user    # REQUIRED: creates sddapp/deny-list.txt with defaults
+$EDITOR sddapp/deny-list.txt          # fill it in under "# Your entries"
+./scripts/sdd setup-user    # apply what you added
 
 # 1. New spec (status: draft, no branch)
 ./scripts/sdd new feature "Localized Greeting"
@@ -698,11 +778,15 @@ not update the front-matter gates; only `scripts/sdd` writes those.
 ## Permissions
 
 `.claude/settings.json` allows `Read`, `Grep`, `Glob`, `./gradlew …`, `./scripts/sdd …` and read-only
-git commands; asks before `git push/commit/checkout/reset`; and denies reading `secrets.properties`,
-`local.properties`, `.env`, keystores, and `git push --force`. The `deny` list is generated from
-`scripts/lib/deny-list.txt` by `sdd sync-agents`. Deny rules are evaluated before anything else, so
-they hold in every mode. The `allow` list applies only once the project is trusted (see
-[Claude Code CLI](#3-claude-code-cli)).
+git commands, and asks before `git push/commit/checkout/reset`. The `allow` list applies only once
+the project is trusted (see [Claude Code CLI](#3-claude-code-cli)).
+
+What no agent may touch is in `sddapp/deny-list.txt`, applied by `sdd setup-user` (see
+[7. Your deny list](#7-your-deny-list--setup-user)). On Claude Code, every run gets
+`--settings sddapp/claude-settings.json`; deny rules from any settings source are evaluated before
+allow rules, so they hold in every mode and override `.claude/settings.json`'s `allow`. On Copilot
+CLI, every run gets `--plugin-dir sddapp/copilot-plugin`, whose deny hook runs before every tool call
+in every mode.
 
 Each agent run gets the permission mode of its role (Claude Code flags):
 
@@ -712,7 +796,10 @@ Each agent run gets the permission mode of its role (Claude Code flags):
 | edit | align, refine, ktlint | `--permission-mode acceptEdits` | `--allow-tool read,search,edit,write` |
 | full | implement | `--permission-mode bypassPermissions` | `--allow-tool read,search,edit,write,shell` |
 
-On Copilot every mode also gets `--no-ask-user` and one `--deny-tool` per `deny-list.txt` entry.
+On Copilot every mode also gets `--no-ask-user` and one `--deny-tool 'shell(<command>:*)'` per
+command in your deny list. File entries are not passed as flags: Copilot's `--deny-tool` has no
+rule for reading a path, and the `read(**/…)` flags SDD 0.3 and earlier passed made Copilot refuse
+ordinary reads too. The deny hook covers them instead.
 Agent runs never read from your terminal: their standard input is closed.
 
 ## Updating the kit
@@ -727,23 +814,30 @@ curl -fsSL https://raw.githubusercontent.com/ataahmet/SddApp/main/install.sh | b
 
 `self-update` downloads the installer of the release it installs and runs it with `--update` on
 this project; use the `curl` form if `scripts/sdd` itself no longer runs. `--update` refreshes the
-kit's own files and keeps the four you are expected to own:
+kit's own files and keeps the three you are expected to own:
 
 | Path | `--update` | Why |
 |------|-----------|-----|
-| `scripts/sdd`, `scripts/lib/*.sh`, `specs/templates/*`, `SDD-README.md`, `.github/copilot-instructions.md` | replaced | the kit's own files; your changes here are lost, so keep local changes in a fork of the kit repository instead |
+| `scripts/sdd`, `scripts/lib/*`, `specs/templates/*`, `SDD-README.md`, `.github/copilot-instructions.md` | replaced | the kit's own files; your changes here are lost, so keep local changes in a fork of the kit repository instead |
 | `.github/agents/*.agent.md` | regenerated | generated from your `.claude/agents/` by `sdd sync-agents`, which the installer runs |
 | `CLAUDE.md` | kept | your project's architecture rules |
-| `.claude/settings.json` | kept | your `allow`/`ask` policy; its `deny` array is regenerated from `deny-list.txt` |
+| `.claude/settings.json` | kept | your `allow`/`ask` policy |
 | `.claude/agents/*.md` | kept | the hand-edited single source; agents that are new in the kit are added |
-| `scripts/lib/deny-list.txt` | kept | the files and commands no agent may touch in this project |
 
-Nothing else under `.github/` (your workflows, for example) is touched.
+Nothing else under `.github/` (your workflows, for example) is touched, and neither is `sddapp/`:
+your deny list is never replaced. The Copilot hook script lives in `scripts/lib/` and is updated
+with the kit.
 
-Because these four are kept, a kit update that changed them does not reach your project on its own.
-The installer lists every kept file whose kit version differs, with a link to the kit's version on
-GitHub; merge what you need, then run `./scripts/sdd sync-agents` if you changed `.claude/agents/` or
-`deny-list.txt`.
+Because these three are kept, a kit update that changed them does not reach your project on its
+own. The installer lists every kept file whose kit version differs, with a link to the kit's version
+on GitHub; merge what you need, then run `./scripts/sdd sync-agents` if you changed
+`.claude/agents/`.
+
+**Coming from SDD 0.3 or earlier:** the project's `scripts/lib/deny-list.txt` is no longer read, and
+the `deny` array the old kit put in `.claude/settings.json` is kept like the rest of that file. Run
+`./scripts/sdd setup-user` (required), fill in the list it creates with the entries you need, and
+run it again; see [7. Your deny list](#7-your-deny-list--setup-user). Then delete
+`scripts/lib/deny-list.txt`, and the old `deny` array if you like (it does no harm).
 
 `--force` replaces everything, `CLAUDE.md` included; use it only on a project whose `CLAUDE.md` you
 have not adapted yet. The two flags cannot be combined.
@@ -754,6 +848,9 @@ have not adapted yet. The two flags cannot be combined.
 |---------|---------------|
 | `claude: command not found` right after installing the CLI | The installer's directory (usually `~/.local/bin`) is not on `PATH`; add it. See [3. Claude Code CLI](#3-claude-code-cli) |
 | `No agent CLI found: … is not on PATH` + a manual protocol, exit 1 | No `claude`/`copilot` on `PATH`, or `SDD_AGENT` names the one that is missing. The spec is left untouched |
+| `✗ No deny list at sddapp/deny-list.txt` / `✗ The deny list is not applied for Claude Code yet` / `✗ … not applied for Copilot CLI yet, or the project moved` | Run `./scripts/sdd setup-user` (required), fill in `sddapp/deny-list.txt`, and run it again. After moving the project to another folder, run it again. See [7. Your deny list](#7-your-deny-list--setup-user) |
+| Copilot: `Permission to run this tool was denied due to the following rules: 'read(**/secrets.properties)' …` | The `read(**/…)` flags of SDD 0.3 and earlier; Copilot CLI has no such rule kind and refused ordinary reads. Update the kit (`./scripts/sdd self-update`) and run `./scripts/sdd setup-user` |
+| Copilot: `Blocked by the SDD deny list (<entry>)` on a call that should pass | The call's arguments name a listed file, e.g. a shell command that writes `.env` into `.gitignore`. Without `jq` on `PATH` the hook also scans file contents being written. Narrow the entry in your list, or do that step yourself |
 | `Ignoring N permissions.allow entries … this workspace has not been trusted` | The project folder was never trusted interactively. Run `claude` once inside it and accept the prompt; the commands still work meanwhile |
 | `Refusing to overwrite existing file: …` during install | A first install over existing files. Use `--update` (keeps your `CLAUDE.md`, settings and agents) or `--force` |
 | `Already ready.` / `ready only works from draft (current: done)` | `ready` only moves a `draft` forward; on `ready`/`active` it is a no-op, and from `done`/`blocked`/`dropped` it refuses. Edit `status:` in the front matter to redo a step |

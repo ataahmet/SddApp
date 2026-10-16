@@ -27,6 +27,9 @@ driver_claude_available() {
 #           readonly  → --permission-mode dontAsk --allowedTools "Task,Read,Grep,Glob"
 #             (also tees combined stdout/stderr into $RUN_AGENT_OUTPUT for
 #              verdict parsing by the caller, e.g. cmd_verify)
+#   Every invocation passes --settings "$SDD_CLAUDE_SETTINGS" (sddapp/claude-settings.json,
+#   written by `sdd setup-user` from sddapp/deny-list.txt): the project's deny
+#   rules, kept in the project but outside every file Claude Code reads on its own.
 #   Every invocation reads stdin from /dev/null. `claude -p` appends whatever
 #   arrives on stdin to the prompt, so without it a caller looping over a
 #   here-string (cmd_implement's task list) had its remaining lines swallowed
@@ -39,16 +42,19 @@ driver_claude_run_agent() {
         RUN_AGENT_OUTPUT="$(mktemp)"
         ( cd "$ROOT" && claude -p "$prompt" \
           --model "$model" \
+          --settings "$SDD_CLAUDE_SETTINGS" \
           --permission-mode acceptEdits < /dev/null ) 2>&1 | tee "$RUN_AGENT_OUTPUT" || true
       else
         ( cd "$ROOT" && claude -p "$prompt" \
           --model "$model" \
+          --settings "$SDD_CLAUDE_SETTINGS" \
           --permission-mode acceptEdits < /dev/null ) || true
       fi
       ;;
     full)
       ( cd "$ROOT" && claude -p "$prompt" \
         --model "$model" \
+        --settings "$SDD_CLAUDE_SETTINGS" \
         --permission-mode bypassPermissions < /dev/null ) || true
       ;;
     readonly)
@@ -61,6 +67,7 @@ driver_claude_run_agent() {
       # the `claude` process's status even though `tee` runs after it.
       ( cd "$ROOT" && claude -p "$prompt" \
         --model "$model" \
+        --settings "$SDD_CLAUDE_SETTINGS" \
         --permission-mode dontAsk \
         --allowedTools "Task,Read,Grep,Glob" < /dev/null ) 2>&1 | tee "$RUN_AGENT_OUTPUT"
       ;;

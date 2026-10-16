@@ -6,8 +6,9 @@ SDD-README.md
 .claude/settings.json
 .github/agents/
 .github/copilot-instructions.md
-scripts/lib/deny-list.txt
+scripts/lib/copilot-deny-hook.sh
 scripts/lib/critique.sh
+scripts/lib/deny-list.default.txt
 scripts/lib/driver-claude.sh
 scripts/lib/driver-copilot.sh
 scripts/sdd
