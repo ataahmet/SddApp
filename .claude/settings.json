@@ -17,14 +17,6 @@
       "Bash(git commit *)",
       "Bash(git checkout *)",
       "Bash(git reset *)"
-    ],
-    "deny": [
-      "Read(./secrets.properties)",
-      "Read(./local.properties)",
-      "Read(./.env)",
-      "Read(**/*.jks)",
-      "Read(**/*.keystore)",
-      "Bash(git push --force *)"
     ]
   }
 }

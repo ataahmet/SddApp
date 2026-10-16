@@ -8,7 +8,6 @@
 # Options (after `bash -s --`, or as the matching environment variables):
 #   --update          refresh the kit and KEEP the files you customise:
 #                       CLAUDE.md  .claude/settings.json  .claude/agents/
-#                       scripts/lib/deny-list.txt
 #   --force           overwrite everything, customised files included
 #   --version <v>     SDD_VERSION      latest (default) | 0.2.0 | main (a branch, built from source)
 #   --dir <path>      SDD_PROJECT_DIR  project to install into (default: the git repository you are in)
@@ -41,7 +40,6 @@ installed system-wide.
 Options:
   --update        refresh the kit and KEEP the files you customise:
                     CLAUDE.md  .claude/settings.json  .claude/agents/
-                    scripts/lib/deny-list.txt
   --force         overwrite everything, customised files included
   --version <v>   latest (default) | 0.2.0 | main (a branch, built from source)
   --dir <path>    install into this repository instead of the one you are in
@@ -261,7 +259,7 @@ main() {
   [ -z "$missing" ] || die "The downloaded kit is incomplete, missing:$missing"
   if [ -n "$conflicts" ]; then
     printf '✗ Nothing was written: these files already exist in %s:%s\n\n' "$target" "$conflicts" >&2
-    printf '  SDD already installed?  re-run with --update  (refresh the kit, keep CLAUDE.md, .claude/settings.json, .claude/agents/, deny-list.txt)\n' >&2
+    printf '  SDD already installed?  re-run with --update  (refresh the kit, keep CLAUDE.md, .claude/settings.json, .claude/agents/)\n' >&2
     printf '  Replace them all:       re-run with --force\n' >&2
     printf '  Or move your own CLAUDE.md aside, install, and merge it back.\n' >&2
     printf '\n  e.g. curl -fsSL https://raw.githubusercontent.com/%s/main/install.sh | bash -s -- --update\n' "$repo" >&2
@@ -270,10 +268,11 @@ main() {
 
   # Pass 2 — copy. User-owned: the files a project is expected to make its own
   # (CLAUDE.md carries its architecture rules, settings.json its local policy,
-  # .claude/agents/ the hand-edited agent source, deny-list.txt the files no
-  # agent may read); --update leaves them alone but still adds agents that are
-  # new in the kit.
-  local user_owned=" CLAUDE.md .claude/settings.json .claude/agents/ scripts/lib/deny-list.txt " owned
+  # .claude/agents/ the hand-edited agent source); --update leaves them alone
+  # but still adds agents that are new in the kit. The deny list is not a
+  # project file: each user keeps one outside every repository
+  # (./scripts/sdd setup-user).
+  local user_owned=" CLAUDE.md .claude/settings.json .claude/agents/ " owned
   local n_new=0 n_upd=0 n_kept=0 differs=""
   while IFS="$(printf '\t')" read -r entry rel; do
     case "$user_owned" in
@@ -295,10 +294,10 @@ main() {
   chmod +x "$target/scripts/sdd"
   printf '%s\n' "$kit_version" > "$target/scripts/lib/VERSION"
 
-  # .github/agents/ is generated from .claude/agents/, and the deny array of
-  # .claude/settings.json from deny-list.txt. Pass 2 copied the kit's generated
-  # copies, but the sources may be the project's own (kept by --update, or its
-  # own agents beside the kit's), so regenerate them from what is actually there.
+  # .github/agents/ is generated from .claude/agents/. Pass 2 copied the kit's
+  # generated copies, but the sources may be the project's own (kept by
+  # --update, or its own agents beside the kit's), so regenerate them from what
+  # is actually there.
   local sync_out sync_ok=1
   sync_out="$(bash "$target/scripts/sdd" sync-agents 2>&1)" || sync_ok=0
 
@@ -323,7 +322,7 @@ main() {
     warn "different agent rules than Claude. Fix the cause and run ./scripts/sdd sync-agents:"
     printf '%s\n' "$sync_out" | grep -v '^→\|^  ·' | sed 's/^/    /' >&2
   elif [ "$update" -eq 1 ]; then
-    say "  .github/agents/ and the settings' deny list regenerated from your .claude/agents/ and deny-list.txt"
+    say "  .github/agents/ regenerated from your .claude/agents/"
   fi
 
   if [ -n "$differs" ]; then
@@ -342,12 +341,35 @@ main() {
     say "  npm install -g @github/copilot                      # Copilot CLI"
   fi
 
+  # The deny list is per user (~/.config/sdd/deny-list.txt, or $SDD_DENY_LIST):
+  # `sdd setup-user` creates it with default entries, the user fills it in, and
+  # agent commands refuse to run until setup-user has applied it. Only read
+  # here: the installer writes nothing outside the project.
+  local user_list="${SDD_DENY_LIST:-$HOME/.config/sdd/deny-list.txt}" need_setup=0 step=1
+  [ -f "$user_list" ] || need_setup=1
+
+  if [ -f "$target/scripts/lib/deny-list.txt" ]; then
+    say ""
+    say "scripts/lib/deny-list.txt is left from SDD 0.3 or earlier and is no longer used; delete it."
+    say "The deny list now lives with each user, outside the project (SDD-README.md, \"7. Your deny list\")."
+  fi
+
   if [ "$update" -eq 0 ]; then
     say ""
     say "Next:"
-    say "  1. Adapt CLAUDE.md to this project (see SDD-README.md)"
-    say "  2. ./scripts/sdd new feature \"My first feature\""
-    say "  3. git add CLAUDE.md SDD-README.md .claude .github scripts specs .gitignore"
+    if [ "$need_setup" -eq 1 ]; then
+      say "  $step. ./scripts/sdd setup-user — REQUIRED once per machine; agent commands refuse to run without it"
+      say "     It creates $user_list with default entries: fill it in, then run ./scripts/sdd setup-user again"
+      step=$((step + 1))
+    fi
+    say "  $step. Adapt CLAUDE.md to this project (see SDD-README.md)"; step=$((step + 1))
+    say "  $step. ./scripts/sdd new feature \"My first feature\""; step=$((step + 1))
+    say "  $step. git add CLAUDE.md SDD-README.md .claude .github scripts specs .gitignore"
+  elif [ "$need_setup" -eq 1 ]; then
+    say ""
+    say "REQUIRED once per machine, before any agent command:"
+    say "  ./scripts/sdd setup-user — creates $user_list with default entries;"
+    say "  fill it in, then run ./scripts/sdd setup-user again"
   fi
 }
 

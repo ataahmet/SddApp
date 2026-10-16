@@ -1,0 +1,30 @@
+# SDD deny list — the files and commands no agent may touch, kept per user.
+#
+# FILL THIS IN. The entries under "Defaults" are only a starting point. Add
+# every file and command of your projects that no agent may read, change or
+# run under "Your entries", then run ./scripts/sdd setup-user again.
+#
+# `./scripts/sdd setup-user` creates this file as ~/.config/sdd/deny-list.txt
+# (or $SDD_DENY_LIST) the first time it runs; from then on the copy is yours
+# and is never overwritten. It applies to every project on this machine:
+#   - Claude Code: setup-user writes one rule per entry into permissions.deny
+#     of ~/.claude/settings.json (and of Xcode's Claude Agent settings.json when
+#     that directory exists). Re-run setup-user after every edit.
+#   - Copilot CLI: setup-user installs a preToolUse hook in ~/.copilot/hooks/
+#     that reads this file on every tool call; shell commands are also passed
+#     to each SDD run as --deny-tool flags. Edits apply immediately.
+#
+# One entry per line; comments ('#') and blank lines are ignored.
+#   - one word         → a file name or glob, matched at any depth under the
+#                        project ("local.properties", "*.jks")
+#   - several words    → a shell command prefix ("git push --force")
+
+# Defaults
+secrets.properties
+local.properties
+.env
+*.jks
+*.keystore
+git push --force
+
+# Your entries
