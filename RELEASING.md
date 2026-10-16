@@ -32,8 +32,10 @@ sdd/
 ```
 
 The files are taken from their real paths in this repository (`scripts/sdd`, `scripts/lib/`,
-`CLAUDE.md`, `.claude/`, `.github/agents/`, `specs/templates/` …), except `SDD-README.md`, which is
-`kit/sdd-usage.md`. To ship a new file to projects, add it to `kit/manifest.txt`.
+`.claude/`, `.github/agents/`, `specs/templates/` …), except `SDD-README.md`, which is
+`kit/sdd-usage.md`, and `CLAUDE.md`, which is `kit/claude-template.md` (the repository's own
+`CLAUDE.md` holds this Android project's rules and is not shipped). To ship a new file to projects,
+add it to `kit/manifest.txt`.
 
 ## Publishing a version
 

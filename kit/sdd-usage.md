@@ -13,7 +13,7 @@ needed. Run `./scripts/sdd help` for the command summary.
 |-------------|-----|
 | macOS or Linux (Windows: WSL), `bash` 3.2 or newer, `git`, `curl` or `wget` | `scripts/sdd` is a bash script; it avoids bash 4 syntax and uses no GNU-only tool options, so BSD (macOS) and GNU (Linux) userlands both work. The target project must be a git repository — `sdd start` creates a branch in it |
 | An agent CLI: Claude Code (`claude`) or GitHub Copilot CLI (`copilot`) | `align`, `critique`, `verify`, `implement` and `fix-ktlint` dispatch agents through it |
-| **JDK 17** | CLAUDE.md pins Java 17, and the Gradle build and ktlint below run on it. `java -version` must print 17 (or point `JAVA_HOME`/`org.gradle.java.home` at it) |
+| **JDK 17** | The Gradle build and ktlint below run on it. `java -version` must print 17 (or point `JAVA_HOME`/`org.gradle.java.home` at it) |
 | **Android SDK**, reachable through `local.properties` (`sdk.dir=…`) or `ANDROID_HOME` | `sdd done` and the implement agent run `assembleDevDebug`. `local.properties` is git-ignored, so a freshly cloned project has none: write it, or export `ANDROID_HOME`. On a machine without Android Studio also install `cmdline-tools` and accept the licences (`sdkmanager --licenses`) |
 | Network access on the first Gradle run | `./gradlew` downloads its own distribution plus the dependencies; the first `done` is slow and cannot run offline |
 | The Gradle tasks listed under [Project prerequisites](#project-prerequisites-gradle) | `implement`, `done` and `fix-ktlint` call them; a new Android project has none of them |
@@ -149,29 +149,18 @@ SDD_AGENT=copilot ./scripts/sdd verify <spec>
 
 ### 6. Adapt CLAUDE.md to your project
 
-**Do this before the first spec.** The `CLAUDE.md` in the payload carries the reference project's
-own architecture rules: Hilt, RxJava2 (`Single`/`Completable`, coroutines forbidden), a PaperDB
-`Source` abstraction, Timber, `@ActivityRetainedScoped` feature dependencies, Java 17,
-`compileSdk 35`, `minSdk 23`. Every agent in the flow reads that file and enforces it —
-`sdd-verify` and `sdd-critique` FAIL a spec that contradicts it, and `sdd-implement` writes code to
-match it. On a project with a different stack those rules are simply wrong, and the gates start
-failing for the wrong reason.
+**Do this before the first spec.** The `CLAUDE.md` in the payload ships its three project
+sections empty. Every agent in the flow reads that file and enforces it — `sdd-verify` and
+`sdd-critique` FAIL a spec that contradicts it, and `sdd-implement` writes code to match it — so
+these sections must state your project's rules before the gates can judge anything.
 
-Rewrite these sections for your project:
+Fill in these sections for your project:
 
 | Section | What belongs there |
 |---------|--------------------|
 | Architecture & Data Flow | Your layer names and the dependency direction between them |
 | Technology | Language and JVM target, SDK levels, DI, async, network, UI, storage, logging — what the project actually uses |
 | Dependency Injection | Your DI framework, the lifetime each kind of dependency gets, and the forbidden cases |
-
-Keep as it is:
-
-- **§9 Spec-Driven Development** and **§9.1 Spec Lifecycle.** The `scripts/sdd` commands, the status
-  values and the gates are described there; rewriting them desynchronises the script, the agents and
-  this guide.
-- The branch convention — unless you also set `SDD_BRANCH_PREFIX`
-  (see [8. Open the branch](#8-open-the-branch--start)).
 
 Two rules of thumb: keep it short, because the longer `CLAUDE.md` gets the less reliably agents
 follow it; and write rules as decisions rather than descriptions ("DI: Hilt, Koin forbidden", not
@@ -252,8 +241,8 @@ Verify before writing the first spec:
 ./gradlew checkCodeQuality assembleDevDebug     # exactly what `sdd done` runs
 ```
 
-- Run these on a **JDK 17** toolchain (CLAUDE.md requires Java 17 anyway); the `--add-opens` flag
-  above is what keeps ktlint working there.
+- Run these on a **JDK 17** toolchain; the `--add-opens` flag above is what keeps ktlint working
+  there.
 - **Already have ktlint through a plugin** (`ktlintCheck`, `lintKotlin`, …)? Skip part 1 and pass
   your task name instead: `./scripts/sdd fix-ktlint app:ktlintCheck`. `fix-ktlint` only needs a task
   whose output contains `File.kt:line:col`; it fails the gate when ktlint runs on violations, which
@@ -379,8 +368,8 @@ after a checkbox. Link each acceptance criterion to its tasks, e.g. `(T1, T2)`. 
 ```
 
 Sets `status: ready`; it only works from `draft`. **It does not check the sections yet** (the check
-is still a `TODO` in the script): an empty template passes. Make sure Goal, Acceptance Criteria and
-Test Plan are filled before you run it.
+is still a `TODO` in the script): an empty template passes. Make sure Goal, Scope, Acceptance
+Criteria and Test Plan are filled before you run it.
 
 ### 4. Generate the open questions — `align`
 
@@ -562,7 +551,7 @@ git add <the changed files>
 git commit -m "[FEAT-001] T1 – short description" -m "Spec: specs/features/001-localized-greeting/spec.md"
 ```
 
-Commit format (CLAUDE.md §9.1): `[{CODE}-{task_id}] {task} – short description`, with
+Commit format: `[{CODE}-{task_id}] {task} – short description`, with
 `Spec: specs/{type}s/{task_id}-{task_name}/spec.md` in the body. CODE: feature→`FEAT`, bug→`BUG`,
 refactor→`REF`, test→`TEST`. The spec file itself is git-ignored (see
 [Where specs live](#where-specs-live)).
