@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # copilot-deny-hook.sh — Copilot CLI preToolUse hook for the SDD deny list.
 #
-# `./scripts/sdd setup-user` copies this file to ~/.copilot/hooks/sdd-deny.sh
-# and registers it in ~/.copilot/hooks/sdd-deny.json, so it guards every
-# Copilot CLI session of this user, in every project.
+# `./scripts/sdd setup-user` registers this file as the preToolUse hook of the
+# project's sddapp/copilot-plugin/ plugin, which every Copilot run scripts/sdd
+# starts loads with --plugin-dir.
 #
 # Why a hook: Copilot CLI's --deny-tool knows shell(), write(), url() and MCP
 # rules, but no read(path) kind (`copilot help permissions`). A deny-list file
@@ -26,11 +26,11 @@
 # Limits: a command that reaches a file without naming it (`grep -r x .`, a
 # script that opens files itself) is not seen.
 #
-# The list is read on every call ($SDD_DENY_LIST, set in the hook's env by
-# setup-user), so edits apply immediately.
+# The list is read on every call (sddapp/deny-list.txt; $SDD_DENY_LIST, set in
+# the hook's env by setup-user), so edits apply immediately.
 set -f   # entries and tokens contain '*': never expand them against the disk
 
-list="${SDD_DENY_LIST:-$HOME/.config/sdd/deny-list.txt}"
+list="${SDD_DENY_LIST:-$PWD/sddapp/deny-list.txt}"
 if [ ! -f "$list" ]; then
   echo "sdd-deny hook: $list not found, nothing is denied; run ./scripts/sdd setup-user" >&2
   exit 0

@@ -15,15 +15,16 @@ From inside the project you want to add SDD to:
 ```bash
 cd your-android-project
 curl -fsSL https://raw.githubusercontent.com/ataahmet/SddApp/main/install.sh | bash
-./scripts/sdd setup-user                 # REQUIRED once per machine: creates your deny list with defaults
-$EDITOR ~/.config/sdd/deny-list.txt      # fill it in: every file and command no agent may touch
+./scripts/sdd setup-user                 # REQUIRED: creates sddapp/deny-list.txt with defaults
+$EDITOR sddapp/deny-list.txt             # fill it in: every file and command no agent may touch
 ./scripts/sdd setup-user                 # apply it to Claude Code and Copilot CLI
 ./scripts/sdd new feature "Biometric login"
 ```
 
-The deny list belongs to you, not to the project: it lives in `~/.config/sdd/deny-list.txt`, covers
-every project on the machine, and agent commands refuse to run until `setup-user` has applied it.
-See "7. Your deny list" in the [full guide](kit/sdd-usage.md#7-your-deny-list--setup-user).
+The deny list lives in the project root under `sddapp/`, which is git-ignored, so each user keeps
+their own and nothing is written outside the project. Agent commands refuse to run until
+`setup-user` has applied it. See "7. Your deny list" in the
+[full guide](kit/sdd-usage.md#7-your-deny-list--setup-user).
 
 Each project gets its own copy (`scripts/sdd`, `CLAUDE.md`, `.claude/`, `.github/agents/`,
 `specs/templates/`). Update a project with `./scripts/sdd self-update`. Full guide:

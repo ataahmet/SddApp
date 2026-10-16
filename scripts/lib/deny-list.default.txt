@@ -1,18 +1,19 @@
-# SDD deny list — the files and commands no agent may touch, kept per user.
+# SDD deny list — the files and commands no agent may touch in this project.
 #
 # FILL THIS IN. The entries under "Defaults" are only a starting point. Add
-# every file and command of your projects that no agent may read, change or
+# every file and command of this project that no agent may read, change or
 # run under "Your entries", then run ./scripts/sdd setup-user again.
 #
-# `./scripts/sdd setup-user` creates this file as ~/.config/sdd/deny-list.txt
-# (or $SDD_DENY_LIST) the first time it runs; from then on the copy is yours
-# and is never overwritten. It applies to every project on this machine:
-#   - Claude Code: setup-user writes one rule per entry into permissions.deny
-#     of ~/.claude/settings.json (and of Xcode's Claude Agent settings.json when
-#     that directory exists). Re-run setup-user after every edit.
-#   - Copilot CLI: setup-user installs a preToolUse hook in ~/.copilot/hooks/
-#     that reads this file on every tool call; shell commands are also passed
-#     to each SDD run as --deny-tool flags. Edits apply immediately.
+# `./scripts/sdd setup-user` creates this file as sddapp/deny-list.txt in the
+# project root the first time it runs; from then on the copy is yours and is
+# never overwritten. sddapp/ is git-ignored, so each user keeps their own.
+# setup-user turns the list into what each agent CLI takes for the runs
+# ./scripts/sdd starts:
+#   - Claude Code: sddapp/claude-settings.json, one deny rule per entry,
+#     passed to every run as --settings. Re-run setup-user after every edit.
+#   - Copilot CLI: sddapp/copilot-plugin/, a preToolUse hook that reads this
+#     file on every tool call, passed to every run as --plugin-dir; shell
+#     commands also go to each run as --deny-tool. Edits apply immediately.
 #
 # One entry per line; comments ('#') and blank lines are ignored.
 #   - one word         → a file name or glob, matched at any depth under the

@@ -269,9 +269,9 @@ main() {
   # Pass 2 — copy. User-owned: the files a project is expected to make its own
   # (CLAUDE.md carries its architecture rules, settings.json its local policy,
   # .claude/agents/ the hand-edited agent source); --update leaves them alone
-  # but still adds agents that are new in the kit. The deny list is not a
-  # project file: each user keeps one outside every repository
-  # (./scripts/sdd setup-user).
+  # but still adds agents that are new in the kit. The deny list is not in the
+  # kit at all: ./scripts/sdd setup-user creates it in the git-ignored sddapp/,
+  # which no install or update ever touches.
   local user_owned=" CLAUDE.md .claude/settings.json .claude/agents/ " owned
   local n_new=0 n_upd=0 n_kept=0 differs=""
   while IFS="$(printf '\t')" read -r entry rel; do
@@ -341,25 +341,25 @@ main() {
     say "  npm install -g @github/copilot                      # Copilot CLI"
   fi
 
-  # The deny list is per user (~/.config/sdd/deny-list.txt, or $SDD_DENY_LIST):
-  # `sdd setup-user` creates it with default entries, the user fills it in, and
-  # agent commands refuse to run until setup-user has applied it. Only read
-  # here: the installer writes nothing outside the project.
-  local user_list="${SDD_DENY_LIST:-$HOME/.config/sdd/deny-list.txt}" need_setup=0 step=1
-  [ -f "$user_list" ] || need_setup=1
+  # The deny list lives in the project, under sddapp/ (git-ignored through
+  # gitignore.sdd): `sdd setup-user` creates sddapp/deny-list.txt with default
+  # entries, the user fills it in, and agent commands refuse to run until
+  # setup-user has applied it. The installer never creates or touches sddapp/.
+  local need_setup=0 step=1
+  [ -f "$target/sddapp/deny-list.txt" ] || need_setup=1
 
   if [ -f "$target/scripts/lib/deny-list.txt" ]; then
     say ""
     say "scripts/lib/deny-list.txt is left from SDD 0.3 or earlier and is no longer used; delete it."
-    say "The deny list now lives with each user, outside the project (SDD-README.md, \"7. Your deny list\")."
+    say "The deny list is now sddapp/deny-list.txt (SDD-README.md, \"7. Your deny list\")."
   fi
 
   if [ "$update" -eq 0 ]; then
     say ""
     say "Next:"
     if [ "$need_setup" -eq 1 ]; then
-      say "  $step. ./scripts/sdd setup-user — REQUIRED once per machine; agent commands refuse to run without it"
-      say "     It creates $user_list with default entries: fill it in, then run ./scripts/sdd setup-user again"
+      say "  $step. ./scripts/sdd setup-user — REQUIRED; agent commands refuse to run without it"
+      say "     It creates sddapp/deny-list.txt with default entries: fill it in, then run ./scripts/sdd setup-user again"
       step=$((step + 1))
     fi
     say "  $step. Adapt CLAUDE.md to this project (see SDD-README.md)"; step=$((step + 1))
@@ -367,8 +367,8 @@ main() {
     say "  $step. git add CLAUDE.md SDD-README.md .claude .github scripts specs .gitignore"
   elif [ "$need_setup" -eq 1 ]; then
     say ""
-    say "REQUIRED once per machine, before any agent command:"
-    say "  ./scripts/sdd setup-user — creates $user_list with default entries;"
+    say "REQUIRED before any agent command:"
+    say "  ./scripts/sdd setup-user — creates sddapp/deny-list.txt with default entries;"
     say "  fill it in, then run ./scripts/sdd setup-user again"
   fi
 }
